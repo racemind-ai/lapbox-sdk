@@ -84,6 +84,123 @@ def build_fastf1_telemetry(*, speed_scale: float = 1.0) -> pd.DataFrame:
 
 
 @pytest.fixture
+def laps_df() -> pd.DataFrame:
+    """A minimal but realistic two-driver laps frame.
+
+    VER runs a 2-stop-shaped set of laps (SOFT -> MEDIUM) with one pit stop;
+    HAM stays out on a single MEDIUM stint. Times are ``Timedelta`` as FastF1
+    produces them.
+    """
+    td = pd.to_timedelta
+    rows = [
+        # VER stint 1 (SOFT), pits at end of lap 2
+        {
+            "Driver": "VER",
+            "LapNumber": 1,
+            "Stint": 1,
+            "Compound": "SOFT",
+            "TyreLife": 1,
+            "LapTime": td("0:01:30.500"),
+            "Sector1Time": td("0:00:30.100"),
+            "Sector2Time": td("0:00:30.200"),
+            "Sector3Time": td("0:00:30.200"),
+            "PitInTime": pd.NaT,
+            "PitOutTime": pd.NaT,
+        },
+        {
+            "Driver": "VER",
+            "LapNumber": 2,
+            "Stint": 1,
+            "Compound": "SOFT",
+            "TyreLife": 2,
+            "LapTime": td("0:01:31.000"),
+            "Sector1Time": td("0:00:30.300"),
+            "Sector2Time": td("0:00:30.300"),
+            "Sector3Time": td("0:00:30.400"),
+            "PitInTime": td("0:03:05.000"),
+            "PitOutTime": pd.NaT,
+        },
+        # VER stint 2 (MEDIUM), out-lap on lap 3
+        {
+            "Driver": "VER",
+            "LapNumber": 3,
+            "Stint": 2,
+            "Compound": "MEDIUM",
+            "TyreLife": 1,
+            "LapTime": td("0:01:33.000"),
+            "Sector1Time": td("0:00:31.000"),
+            "Sector2Time": td("0:00:31.000"),
+            "Sector3Time": td("0:00:31.000"),
+            "PitInTime": pd.NaT,
+            "PitOutTime": td("0:03:28.000"),
+        },
+        # HAM single MEDIUM stint, no stops
+        {
+            "Driver": "HAM",
+            "LapNumber": 1,
+            "Stint": 1,
+            "Compound": "MEDIUM",
+            "TyreLife": 5,
+            "LapTime": td("0:01:31.200"),
+            "Sector1Time": td("0:00:30.400"),
+            "Sector2Time": td("0:00:30.400"),
+            "Sector3Time": td("0:00:30.400"),
+            "PitInTime": pd.NaT,
+            "PitOutTime": pd.NaT,
+        },
+        {
+            "Driver": "HAM",
+            "LapNumber": 2,
+            "Stint": 1,
+            "Compound": "MEDIUM",
+            "TyreLife": 6,
+            "LapTime": td("0:01:31.100"),
+            "Sector1Time": td("0:00:30.300"),
+            "Sector2Time": td("0:00:30.400"),
+            "Sector3Time": td("0:00:30.400"),
+            "PitInTime": pd.NaT,
+            "PitOutTime": pd.NaT,
+        },
+    ]
+    frame = pd.DataFrame(rows)
+    # Elapsed session time at the line, as FastF1 provides it. VER leads lap 1
+    # by 0.7s and lap 2 by 0.2s; on lap 3 only VER is running.
+    frame["Time"] = pd.to_timedelta(
+        [
+            "0:01:30.500",  # VER lap 1
+            "0:03:01.500",  # VER lap 2
+            "0:04:34.500",  # VER lap 3
+            "0:01:31.200",  # HAM lap 1  -> 0.700s behind VER
+            "0:03:02.300",  # HAM lap 2  -> 0.800s behind VER
+        ]
+    )
+    return frame
+
+
+@pytest.fixture
+def fastf1_laps(laps_df: pd.DataFrame) -> pd.DataFrame:
+    """``laps_df`` as FastF1's own ``Laps`` object, the type ``session.laps`` is."""
+    from fastf1.core import Laps  # imported here: FastF1 is slow to import
+
+    return Laps(laps_df)
+
+
+@pytest.fixture
+def weather_df() -> pd.DataFrame:
+    """A minimal weather timeline."""
+    return pd.DataFrame(
+        {
+            "Time": pd.to_timedelta(["0:00:00", "0:01:00"]),
+            "AirTemp": [24.5, 24.7],
+            "TrackTemp": [38.1, 38.4],
+            "Humidity": [40.0, 41.0],
+            "Rainfall": [False, False],
+            "WindSpeed": [1.2, 1.4],
+        }
+    )
+
+
+@pytest.fixture
 def lap_tel_a() -> pd.DataFrame:
     """Reference lap telemetry (the faster driver)."""
     return build_synthetic_lap(speed_scale=1.0)

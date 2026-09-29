@@ -8,16 +8,18 @@
 [FastF1](https://docs.fastf1.dev/). It is the analysis engine behind
 [LapBox](https://lapbox.in), extracted so anyone can use it on FastF1 data.
 
-> **Status: early development release (`0.1.0.dev0`).** Only `lapbox.telemetry` is in
-> the library so far. Race pace, tyre degradation, practice long runs and the strategy
-> engine are moving over from LapBox next. Expect the API to change before `0.1.0`.
+> **Status: early development release (`0.1.0.dev1`).** In the library so far:
+> `lapbox.telemetry` (one lap, two laps matched by track position), `lapbox.data` (laps,
+> pit stops, stints, gaps) and `lapbox.practice` (long runs). Race pace, tyre degradation
+> and the strategy engine are moving over from LapBox next. Expect the API to change
+> before `0.1.0`.
 
 ## Install
 
 Until the first PyPI release, install from the tagged source:
 
 ```bash
-pip install "lapbox @ https://github.com/racemind-ai/lapbox-sdk/archive/refs/tags/v0.1.0.dev0.tar.gz"
+pip install "lapbox @ https://github.com/racemind-ai/lapbox-sdk/archive/refs/tags/v0.1.0.dev1.tar.gz"
 ```
 
 Python 3.11+. Depends on FastF1, pandas, NumPy and SciPy.
@@ -47,6 +49,43 @@ else:
 {'minisectors_a': 15, 'minisectors_b': 6, 'dominant_driver': 'VER', 'max_speed_a': 324.0, 'max_speed_b': 319.0}
 +0.056 s
 ```
+
+### Long runs in practice
+
+`session.laps` goes straight in. A practice session is split into runs between pit
+visits; runs of five or more laps are candidate long runs.
+
+```python
+import fastf1
+from lapbox.practice import MIN_LONG_RUN, long_run_pace, session_runs
+
+session = fastf1.get_session(2025, "Monza", "FP2")
+session.load(telemetry=False, weather=False, messages=False)
+
+paces = [
+    long_run_pace(run)
+    for runs in session_runs(session.laps).values()
+    for run, kind in runs
+    if kind == "long_run"
+]
+paces = [p for p in paces if p.laps >= MIN_LONG_RUN]  # enough laps left at race pace
+for p in sorted(paces, key=lambda p: p.median_s)[:5]:
+    print(f"{p.driver} {p.compound:<6} {p.laps:>2} laps  {p.median_s:.3f} s  deg {p.deg_slope_s_per_lap:+.3f} s/lap")
+```
+
+```text
+NOR MEDIUM 11 laps  83.616 s  deg -0.004 s/lap
+VER MEDIUM 10 laps  83.688 s  deg +0.008 s/lap
+PIA MEDIUM  9 laps  83.956 s  deg -0.032 s/lap
+LEC SOFT    7 laps  84.025 s  deg -0.175 s/lap
+RUS HARD    9 laps  84.034 s  deg -0.154 s/lap
+```
+
+Keep the `MIN_LONG_RUN` line. A run is classed `long_run` when it has five or more
+consecutive timed laps, and on raw FastF1 laps those can include out-laps and cool-down
+laps. `long_run_pace` drops laps slower than 107 % of the run's best, and a qualifying
+simulation then has one or two laps left. Without the filter, those show up at the top of
+the list at qualifying pace.
 
 ## Why the laps are matched first
 
@@ -80,6 +119,14 @@ accurate"*.
   you get is the same corners on every lap of a circuit, which is what comparisons need.
 - **Corner classes are rough bands** of apex speed: slow < 130 km/h, medium 130–210,
   fast > 210.
+- **Long-run pace is indicative between teams.** Fuel loads are never published, so two
+  cars' absolute long-run times may reflect different fuel, not different pace.
+- **The long-run degradation slope** adds back an assumed fuel effect of 0.048 s/lap
+  (`FUEL_EFFECT_S_PER_LAP`), the same for every car, not measured. The slope also contains
+  track evolution and the driver building up, so it can be negative: the car got
+  quicker through the run, not the tyres younger.
+- **Gaps to the car ahead only count cars on the same lap.** A lapped car physically in
+  front is not counted as traffic.
 
 ## What's in `lapbox.telemetry`
 
@@ -102,6 +149,27 @@ accurate"*.
 | `channel_delta(aligned, channel)` | Speed / throttle / brake difference |
 | `corner_speeds(aligned, apexes)` | Both drivers' minimum speed at the same corners |
 | `minisector_dominance(tel_a, tel_b, ...)` | Who is faster in each minisector |
+
+## What's in `lapbox.data`
+
+| | |
+|---|---|
+| `normalize_laps(laps)` | Adds float-seconds columns (`LapTimeSeconds`, sector and pit times) |
+| `normalize_weather(weather)` | Adds `TimeSeconds` |
+| `derive_pit_stops(laps)` | One row per stop, in-lap paired with the next out-lap, with the pit-lane time |
+| `derive_tyre_stints(laps)` | One row per stint: compound, first and last lap, length, tyre life |
+| `gaps_to_car_ahead(laps)` | Seconds to the car ahead at the line, per `(driver, lap)` |
+| `timedelta_to_seconds`, `seconds_to_timedelta`, `format_laptime` | Time conversion, `NaT`-safe; `format_laptime(83.245)` → `'1:23.245'` |
+
+## What's in `lapbox.practice`
+
+| | |
+|---|---|
+| `detect_runs(laps)` → `[Run]` | Runs of consecutive timed laps, broken by pit visits, untimed laps and tyre changes |
+| `classify_run(run, session_best)` | `long_run`, `quali_sim` or `other` |
+| `session_runs(laps)` | Every driver's runs, classified |
+| `long_run_pace(run)` → `LongRunPace` | Median pace, degradation slope (fuel-corrected), consistency, laps dropped |
+| `longest_run_length(laps)` | Whether a session contains a long run at all |
 
 ## Development
 
