@@ -199,12 +199,19 @@ def detect_runs(laps: pd.DataFrame) -> list[Run]:
 def classify_run(run: Run, session_best: float | None = None) -> str:
     """Label a run ``long_run``, ``quali_sim`` or ``other``.
 
+    A long run needs :data:`MIN_LONG_RUN` laps *at race pace* — within
+    :data:`RUN_OUTLIER_CUTOFF` of the run's best, the laps :func:`long_run_pace`
+    measures. Counting every timed lap is not enough: a qualifying run with its
+    out-lap and cool-down laps is five consecutive timed laps, but only one or
+    two of them are pace, and they are qualifying pace.
+
     A qualifying simulation is short AND fast — brevity alone is not enough,
     since an aborted long run is also short. ``session_best`` is the driver's
     fastest lap of the session; without it, short runs cannot be confirmed as
     representative and fall through to ``other``.
     """
-    if run.length >= MIN_LONG_RUN:
+    at_pace = int(representative_mask(np.asarray(run.lap_times, dtype=float)).sum())
+    if at_pace >= MIN_LONG_RUN:
         return "long_run"
     if run.length <= MAX_QUALI_SIM and session_best and run.best <= session_best * QUALI_SIM_CUTOFF:
         return "quali_sim"

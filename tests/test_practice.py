@@ -114,6 +114,33 @@ class TestClassifyRun:
     def test_short_run_without_a_session_best_is_unclassifiable(self) -> None:
         assert classify_run(self._run([90.0]), session_best=None) == "other"
 
+    def test_a_qualifying_run_padded_with_slow_laps_is_not_a_long_run(self) -> None:
+        """Out-lap, push, cool-down, push, in-lap: five timed laps, two at pace.
+
+        Counted by timed laps this was a "long run" at qualifying pace, and it
+        topped the long-run table of 2025 Monza FP2.
+        """
+        run = self._run([110.0, 80.0, 104.0, 80.3, 112.0])
+        assert run.length == 5
+        assert classify_run(run, session_best=80.0) == "other"
+
+    def test_a_long_run_survives_one_traffic_lap(self) -> None:
+        run = self._run([95.0, 95.1, 130.0, 95.2, 95.3, 95.4])
+        assert classify_run(run, session_best=90.0) == "long_run"
+
+    def test_every_long_run_has_enough_laps_at_pace(self) -> None:
+        """The guarantee callers used to have to add themselves."""
+        laps = frame(
+            [lap("VER", i + 1, t) for i, t in enumerate([110.0, 80.0, 104.0, 80.3, 112.0])]
+            + [lap("VER", 7 + i, 95.0 + 0.1 * i, stint=2) for i in range(6)]
+            + [lap("HAM", i + 1, t) for i, t in enumerate([96.0, 130.0, 131.0, 96.2, 96.1, 140.0])]
+        )
+        long_runs = [
+            run for runs in session_runs(laps).values() for run, kind in runs if kind == "long_run"
+        ]
+        assert [r.driver for r in long_runs] == ["VER"]  # HAM has 3 laps at pace
+        assert all(long_run_pace(r).laps >= MIN_LONG_RUN for r in long_runs)
+
 
 class TestLongRunPace:
     def test_degradation_adds_the_fuel_effect_back(self) -> None:

@@ -8,9 +8,10 @@
 [FastF1](https://docs.fastf1.dev/). It is the analysis engine behind
 [LapBox](https://lapbox.in), extracted so anyone can use it on FastF1 data.
 
-> **Status: early development release (`0.1.0.dev1`).** In the library so far:
+> **Status: early development release (`0.1.0.dev2`).** In the library so far:
 > `lapbox.telemetry` (one lap, two laps matched by track position), `lapbox.data` (laps,
-> pit stops, stints, gaps) and `lapbox.practice` (long runs). Race pace, tyre degradation
+> pit stops, stints, gaps), `lapbox.practice` (long runs) and `lapbox.pace` (lap cleaning,
+> fuel-corrected race pace, clean air vs traffic, consistency, ideal lap). Tyre degradation
 > and the strategy engine are moving over from LapBox next. Expect the API to change
 > before `0.1.0`.
 
@@ -19,7 +20,7 @@
 Until the first PyPI release, install from the tagged source:
 
 ```bash
-pip install "lapbox @ https://github.com/racemind-ai/lapbox-sdk/archive/refs/tags/v0.1.0.dev1.tar.gz"
+pip install "lapbox @ https://github.com/racemind-ai/lapbox-sdk/archive/refs/tags/v0.1.0.dev2.tar.gz"
 ```
 
 Python 3.11+. Depends on FastF1, pandas, NumPy and SciPy.
@@ -53,11 +54,12 @@ else:
 ### Long runs in practice
 
 `session.laps` goes straight in. A practice session is split into runs between pit
-visits; runs of five or more laps are candidate long runs.
+visits; a run is a long run when at least five of its laps were at race pace (within
+107 % of the run's best), so a qualifying run with its out-lap and cool-down laps is not one.
 
 ```python
 import fastf1
-from lapbox.practice import MIN_LONG_RUN, long_run_pace, session_runs
+from lapbox.practice import long_run_pace, session_runs
 
 session = fastf1.get_session(2025, "Monza", "FP2")
 session.load(telemetry=False, weather=False, messages=False)
@@ -68,7 +70,6 @@ paces = [
     for run, kind in runs
     if kind == "long_run"
 ]
-paces = [p for p in paces if p.laps >= MIN_LONG_RUN]  # enough laps left at race pace
 for p in sorted(paces, key=lambda p: p.median_s)[:5]:
     print(f"{p.driver} {p.compound:<6} {p.laps:>2} laps  {p.median_s:.3f} s  deg {p.deg_slope_s_per_lap:+.3f} s/lap")
 ```
@@ -81,11 +82,44 @@ LEC SOFT    7 laps  84.025 s  deg -0.175 s/lap
 RUS HARD    9 laps  84.034 s  deg -0.154 s/lap
 ```
 
-Keep the `MIN_LONG_RUN` line. A run is classed `long_run` when it has five or more
-consecutive timed laps, and on raw FastF1 laps those can include out-laps and cool-down
-laps. `long_run_pace` drops laps slower than 107 % of the run's best, and a qualifying
-simulation then has one or two laps left. Without the filter, those show up at the top of
-the list at qualifying pace.
+### Race pace, with the fuel taken out
+
+A car gets roughly two seconds a lap quicker over a Grand Prix just by burning fuel, so
+raw lap times compare fuel loads as much as pace. `true_pace_ranking` normalises every lap
+to end-of-race fuel and ranks each driver's median over their representative laps (within
+107 % of their best, no pit laps). `clean_air_ranking` splits those laps by the gap to the
+car ahead at the line (2 s or less is traffic) and shows what traffic cost.
+
+```python
+import fastf1
+from lapbox.pace import clean_air_ranking, true_pace_ranking
+
+session = fastf1.get_session(2025, "Monza", "R")
+session.load(telemetry=False, weather=False, messages=False)
+
+pace = true_pace_ranking(session.laps)
+print(pace[["driver", "corrected_median", "gap", "raw_rank", "corrected_rank"]].head(5).round(3))
+
+traffic = clean_air_ranking(session.laps)
+print(traffic[["driver", "clean_pace", "traffic_pace", "delta", "traffic_share"]].head(3).round(3))
+```
+
+```text
+  driver  corrected_median    gap  raw_rank  corrected_rank
+0    VER            81.215  0.000         1               1
+1    NOR            81.560  0.345         3               2
+2    PIA            81.651  0.436         2               3
+3    LEC            81.803  0.588         4               4
+4    RUS            81.892  0.677         5               5
+  driver  clean_pace  traffic_pace  delta  traffic_share
+0    LAW      82.109        82.756  0.647           80.0
+1    ALB      81.953        82.496  0.542           52.0
+2    PIA      81.643        82.134  0.492           16.0
+```
+
+On raw medians PIA was second and NOR third. Once fuel is taken out they swap, and on this
+race the corrected top five matches the finishing order. One race proves nothing
+about the method.
 
 ## Why the laps are matched first
 
@@ -127,6 +161,12 @@ accurate"*.
   quicker through the run, not the tyres younger.
 - **Gaps to the car ahead only count cars on the same lap.** A lapped car physically in
   front is not counted as traffic.
+- **Race-pace fuel correction uses the same assumed 0.048 s/lap** for every car and race.
+- **The 2 s dirty-air threshold is a convention, not a measurement.** Pass `threshold=`
+  to change it; a per-circuit curve fitted from data is on the roadmap.
+- **An ideal lap is refused, not faked.** `ideal_lap` returns `None` when a sector was never
+  timed on a clean lap, or when the sum of best sectors comes out slower than the fastest
+  lap (FastF1 leaves lap 1's S1 blank after a standing start).
 
 ## What's in `lapbox.telemetry`
 
@@ -170,6 +210,22 @@ accurate"*.
 | `session_runs(laps)` | Every driver's runs, classified |
 | `long_run_pace(run)` → `LongRunPace` | Median pace, degradation slope (fuel-corrected), consistency, laps dropped |
 | `longest_run_length(laps)` | Whether a session contains a long run at all |
+
+## What's in `lapbox.pace`
+
+| | |
+|---|---|
+| `LapCleaningPipeline(config).clean(laps)` → `CleaningResult` | Drops duplicate, untimed, pit, inaccurate, deleted, implausible (and optionally outlier) laps, **and reports how many each rule removed** |
+| `representative_base_time(lap_times)` | A circuit's normal pace: the median of laps within 107 % of the best, falling back to the plain median when fewer than 20 survive |
+| `fuel_correct(laps)` | Every timed, non-pit lap normalised to end-of-race fuel |
+| `true_pace_ranking(laps)` | Drivers ranked on fuel-corrected median pace, raw rank alongside |
+| `clean_air_split(laps, driver)`, `clean_air_ranking(laps)` | Fuel-corrected pace in clean air vs within 2 s of the car ahead |
+| `driver_consistency(laps, driver)`, `consistency_ranking(laps)` | Spread (std, CV %) of representative laps, lap by lap |
+| `ideal_lap(laps, driver)`, `biggest_loss(ideal)` | Sum of best sectors vs the fastest lap, and where that lap lost most |
+
+These are the same calculations the LapBox Race Analysis page runs in the browser. On
+two real races (Monza 2025, Silverstone 2026) the Python and the site's TypeScript agree
+on all 7,226 values compared.
 
 ## Development
 
