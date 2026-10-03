@@ -21,7 +21,7 @@ from lapbox.pace import (
     ideal_lap,
     true_pace_ranking,
 )
-from lapbox.pace.race import _slope
+from lapbox.pace.race import _drivers, _Lap, _slope
 from lapbox.practice import FUEL_EFFECT_S_PER_LAP
 
 pytestmark = pytest.mark.unit
@@ -419,3 +419,92 @@ class TestFastF1Laps:
         consistency_ranking(frame)
         ideal_lap(frame, "VER")
         pd.testing.assert_frame_equal(frame, before)
+
+
+# --------------------------------------------------------------------------- #
+# Per-driver calls on a whole session
+# --------------------------------------------------------------------------- #
+class TestPerDriverCalls:
+    """``driver_consistency`` and ``ideal_lap`` are called once per driver, so each
+    reads only that driver's rows."""
+
+    ROWS = (
+        [
+            lap(n, 90.0 + 0.1 * (n % 3), driver="VER", s1=30.0, s2=30.0 + 0.1 * (n % 2), s3=30.0)
+            for n in range(1, 9)
+        ]
+        + [
+            lap(n, 90.5 + 0.2 * (n % 2), driver="LEC", s1=30.2, s2=30.1, s3=30.2 + 0.1 * (n % 3))
+            for n in range(1, 9)
+        ]
+        + [lap(9, 110.0, driver="VER", pit=True)]
+    )
+
+    def test_the_whole_session_gives_the_same_answer_as_the_drivers_own_laps(self) -> None:
+        frame = laps_frame(self.ROWS)
+        for driver in ("VER", "LEC"):
+            own = frame[frame["Driver"] == driver]
+            assert driver_consistency(frame, driver) is not None
+            assert driver_consistency(frame, driver) == driver_consistency(own, driver)
+            assert ideal_lap(frame, driver) is not None
+            assert ideal_lap(frame, driver) == ideal_lap(own, driver)
+
+    def test_a_driver_not_in_the_session_gets_none(self) -> None:
+        frame = laps_frame(self.ROWS)
+        assert driver_consistency(frame, "XXX") is None
+        assert ideal_lap(frame, "XXX") is None
+
+    def test_a_categorical_driver_column_gives_the_same_answers(self) -> None:
+        frame = laps_frame(self.ROWS)
+        cat = frame.assign(Driver=frame["Driver"].astype("category"))
+        assert driver_consistency(cat, "LEC") == driver_consistency(frame, "LEC")
+        assert ideal_lap(cat, "LEC") == ideal_lap(frame, "LEC")
+        pd.testing.assert_frame_equal(consistency_ranking(cat), consistency_ranking(frame))
+
+
+class TestReader:
+    """``_drivers``, which every function here reads its laps through."""
+
+    ROWS = [
+        lap(3, 91.0, driver="LEC", s1=30.0, s2=30.5, s3=30.5),
+        lap(2, 90.5, driver="VER", compound="HARD", s1=30.25),
+        lap(1, 90.0, driver="VER"),
+        lap(1, None, driver="LEC", pit=True),
+        lap(4, 92.0, driver="LEC"),  # LapNumber removed below: ignored
+    ]
+
+    def frame(self) -> pd.DataFrame:
+        frame = laps_frame(self.ROWS)
+        frame.index = [40, 10, 30, 20, 50]  # FastF1 keeps its own index after filtering
+        frame.loc[50, "LapNumber"] = float("nan")
+        return frame
+
+    def test_reads_every_field_per_driver_in_lap_order(self) -> None:
+        got = _drivers(self.frame(), gaps={("VER", 2): 1.5})
+        assert list(got) == ["LEC", "VER"]  # the order drivers first appear in
+        assert [lp.lap for lp in got["LEC"]] == [1, 3]
+        assert [lp.lap for lp in got["VER"]] == [1, 2]
+        assert got["LEC"][0] == _Lap(
+            lap=1, seconds=None, compound="MEDIUM", pit=True, sectors=(None, None, None),
+            gap_ahead=None,
+        )  # fmt: skip
+        assert got["LEC"][1] == _Lap(
+            lap=3, seconds=91.0, compound="MEDIUM", pit=False, sectors=(30.0, 30.5, 30.5),
+            gap_ahead=None,
+        )  # fmt: skip
+        assert got["VER"][1] == _Lap(
+            lap=2, seconds=90.5, compound="HARD", pit=False, sectors=(30.25, None, None),
+            gap_ahead=1.5,
+        )  # fmt: skip
+
+    def test_without_a_compound_column_every_compound_is_none(self) -> None:
+        got = _drivers(self.frame().drop(columns=["Compound"]), gaps={})
+        assert all(lp.compound is None for driver_laps in got.values() for lp in driver_laps)
+
+    def test_categorical_columns_read_like_plain_ones(self) -> None:
+        frame = self.frame()
+        cat = frame.assign(
+            Driver=frame["Driver"].astype("category"),
+            Compound=frame["Compound"].astype("category"),
+        )
+        assert _drivers(cat, gaps={}) == _drivers(frame, gaps={})
