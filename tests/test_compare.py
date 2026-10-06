@@ -183,7 +183,14 @@ class TestMinisectorDominance:
             lap_tel_a, lap_tel_b, driver_a="VER", driver_b="HAM", num_minisectors=21
         )
         assert len(ms) == 21
-        assert {"minisector", "fastest", "mean_speed_a", "mean_speed_b"}.issubset(ms.columns)
+        assert {
+            "minisector",
+            "fastest",
+            "mean_speed_a",
+            "mean_speed_b",
+            "time_a",
+            "time_b",
+        }.issubset(ms.columns)
 
     def test_faster_driver_dominates(
         self, lap_tel_a: pd.DataFrame, lap_tel_b: pd.DataFrame
@@ -191,14 +198,46 @@ class TestMinisectorDominance:
         ms = minisector_dominance(lap_tel_a, lap_tel_b, driver_a="VER", driver_b="HAM")
         assert (ms["fastest"] == "VER").sum() > (ms["fastest"] == "HAM").sum()
 
+    def test_time_decides_not_mean_speed(self) -> None:
+        # A crawls through a corner then flies down a straight: the higher mean
+        # speed (200 vs 180 km/h), but far more time than B's steady 180.
+        slow_fast = _lap(np.r_[np.full(100, 50.0), np.full(100, 350.0)])
+        steady = _lap(np.full(200, 180.0))
+        [row] = minisector_dominance(
+            slow_fast, steady, driver_a="A", driver_b="B", num_minisectors=1
+        ).itertuples()
+        assert row.mean_speed_a > row.mean_speed_b
+        assert row.time_a > row.time_b
+        assert row.fastest == "B"
+
 
 class TestCompareDrivers:
     def test_summary(self, lap_tel_a: pd.DataFrame, lap_tel_b: pd.DataFrame) -> None:
         result = compare_drivers(lap_tel_a, lap_tel_b, driver_a="VER", driver_b="HAM")
-        assert result.summary["dominant_driver"] == "VER"
+        assert result.summary["more_minisectors"] == "VER"
+        assert "dominant_driver" not in result.summary  # a count, not a verdict: renamed
         assert result.summary["minisectors_a"] >= result.summary["minisectors_b"]
         assert result.summary["max_speed_a"] >= result.summary["max_speed_b"]
         assert not result.aligned.empty
+
+    def test_minisectors_do_not_follow_the_display_grid(
+        self, lap_tel_a: pd.DataFrame, lap_tel_b: pd.DataFrame
+    ) -> None:
+        # A coarse grid for the charts must not make the minisectors coarser.
+        fine = compare_drivers(lap_tel_a, lap_tel_b, driver_a="VER", driver_b="HAM")
+        coarse = compare_drivers(
+            lap_tel_a, lap_tel_b, driver_a="VER", driver_b="HAM", num_points=400
+        )
+        assert len(coarse.aligned) == 400
+        pd.testing.assert_frame_equal(coarse.minisectors, fine.minisectors)
+
+    def test_minisector_times_add_up_to_the_gap_on_their_grid(
+        self, lap_tel_a: pd.DataFrame, lap_tel_b: pd.DataFrame
+    ) -> None:
+        ms = minisector_dominance(lap_tel_a, lap_tel_b, driver_a="VER", driver_b="HAM")
+        own_grid = align_by_distance(lap_tel_a, lap_tel_b, num_points=4000, channels=("Speed",))
+        gap = cumulative_time_delta(own_grid).iloc[-1]
+        assert (ms["time_b"] - ms["time_a"]).sum() == pytest.approx(gap, abs=1e-9)
 
 
 class TestComparisonMatched:

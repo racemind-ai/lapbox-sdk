@@ -1,8 +1,8 @@
 """Two-lap telemetry comparison.
 
 Compares two drivers' laps by aligning their telemetry onto a common distance
-axis, then computing per-channel deltas, a cumulative time gap, and minisector
-dominance (who is faster where on track).
+axis, then computing per-channel deltas, a cumulative time gap, and who took
+less time through each minisector.
 
 All functions are pure and operate on telemetry DataFrames, so they compose with
 :mod:`lapbox.telemetry.lap` and are unit-tested without any network.
@@ -26,6 +26,13 @@ logger = logging.getLogger(__name__)
 # no further than this fraction of a lap for the offset between them; the worst
 # real case measured across a season was 2.6 %.
 _MAX_SHIFT_FRACTION = 0.05
+
+# Minisector owners are decided on their own fine grid, whatever grid the laps are
+# compared on: the alignment slides a lap by whole grid steps, and that moves time
+# between neighbouring minisectors. On 2023 Bahrain qualifying (45 pairs) owners
+# flipped in 131 of 945 minisectors between 500 and 1,000 points, 66 between 1,000
+# and 2,000, and 39 between 2,000 and 4,000.
+_MINISECTOR_POINTS = 4000
 
 
 def _best_circular_shift(ref: np.ndarray, other: np.ndarray, max_shift: int) -> int:
@@ -171,6 +178,14 @@ def cumulative_time_delta(
     Speeds are clamped to a 1 km/h floor so standing starts or data glitches
     cannot divide by zero.
     """
+    t_a, t_b = _sample_times(aligned, suffixes)
+    return pd.Series(np.cumsum(t_b - t_a), index=aligned.index, name="time_delta")
+
+
+def _sample_times(
+    aligned: pd.DataFrame, suffixes: tuple[str, str] = ("_a", "_b")
+) -> tuple[np.ndarray, np.ndarray]:
+    """Seconds each driver takes over each sample's stretch of the shared grid (``dx / v``)."""
     col_a, col_b = f"Speed{suffixes[0]}", f"Speed{suffixes[1]}"
     if col_a not in aligned.columns or col_b not in aligned.columns:
         raise KeyError("Aligned frame is missing 'Speed' columns.")
@@ -179,8 +194,7 @@ def cumulative_time_delta(
     dx = np.diff(distance, prepend=distance[0])  # first sample contributes 0 s
     v_a = np.maximum(aligned[col_a].to_numpy(dtype=float), 1.0) / 3.6  # km/h -> m/s
     v_b = np.maximum(aligned[col_b].to_numpy(dtype=float), 1.0) / 3.6
-    delta = np.cumsum(dx / v_b - dx / v_a)
-    return pd.Series(delta, index=aligned.index, name="time_delta")
+    return dx / v_a, dx / v_b
 
 
 def corner_speeds(
@@ -233,35 +247,49 @@ def minisector_dominance(
     driver_b: str,
     num_minisectors: int = 21,
 ) -> pd.DataFrame:
-    """Split the lap into minisectors and flag the faster driver in each.
+    """Split the lap into equal-distance minisectors and flag the faster driver in each.
 
-    Speed is averaged per driver within each equal-distance minisector; the
-    driver with the higher average "owns" that minisector.
+    A minisector goes to the driver who spends less time in it (``dx / v`` summed
+    over its stretch, as :func:`cumulative_time_delta` integrates), so the
+    minisector times add up to the time gap at the line on the same grid. Mean
+    speeds are kept for reference, but they don't decide: a minisector holding a
+    slow corner and a straight can have the higher mean speed and still take
+    longer. On 2023 Bahrain, 2025 Monza and 2026 Melbourne qualifying the two
+    disagreed in 2.8 to 7.4 % of minisectors.
+
+    The laps are aligned on their own 4,000-point grid. Even there a minisector's
+    margin moved by up to 30 ms between 2,000 and 4,000 points, and 29 % of 945
+    minisectors (2023 Bahrain qualifying) were decided by less than 20 ms: read a
+    margin of a few hundredths as too close to call.
 
     Returns:
         DataFrame with ``minisector``, ``start_distance``, ``end_distance``,
-        ``mean_speed_a``, ``mean_speed_b`` and ``fastest`` (driver label).
+        ``mean_speed_a``, ``mean_speed_b``, ``time_a``, ``time_b`` (seconds) and
+        ``fastest`` (driver label; ties go to driver A).
     """
-    aligned = align_by_distance(tel_a, tel_b, channels=("Speed",))
+    aligned = align_by_distance(tel_a, tel_b, num_points=_MINISECTOR_POINTS, channels=("Speed",))
     distance = aligned["Distance"].to_numpy()
     lo, hi = distance.min(), distance.max()
     edges = np.linspace(lo, hi, num_minisectors + 1)
     # Bin index 0..num_minisectors-1 for each sample.
     idx = np.clip(np.digitize(distance, edges[1:-1]), 0, num_minisectors - 1)
+    t_a, t_b = _sample_times(aligned)
 
-    frame = aligned.assign(_ms=idx)
+    frame = aligned.assign(_ms=idx, _t_a=t_a, _t_b=t_b)
     rows = []
     for ms, group in frame.groupby("_ms"):
-        mean_a = float(group["Speed_a"].mean())
-        mean_b = float(group["Speed_b"].mean())
+        time_a = float(group["_t_a"].sum())
+        time_b = float(group["_t_b"].sum())
         rows.append(
             {
                 "minisector": int(ms) + 1,
                 "start_distance": float(edges[ms]),
                 "end_distance": float(edges[ms + 1]),
-                "mean_speed_a": mean_a,
-                "mean_speed_b": mean_b,
-                "fastest": driver_a if mean_a >= mean_b else driver_b,
+                "mean_speed_a": float(group["Speed_a"].mean()),
+                "mean_speed_b": float(group["Speed_b"].mean()),
+                "time_a": time_a,
+                "time_b": time_b,
+                "fastest": driver_a if time_a <= time_b else driver_b,
             }
         )
     return pd.DataFrame(rows)
@@ -309,6 +337,16 @@ def compare_drivers(
     Check :attr:`ComparisonResult.matched` before using anything that compares
     the two laps sample-for-sample: a telemetry dropout can leave one lap
     impossible to line up with the other.
+
+    ``num_points`` sets the grid of ``aligned``; the minisectors are decided on
+    their own finer alignment (see :func:`minisector_dominance`), so a coarse
+    display grid doesn't make them noisier.
+
+    ``summary["more_minisectors"]`` is the driver who won more minisectors: a
+    count, not who was quicker. A driver can lose most minisectors and still
+    take pole by gaining big in a few (2023 Bahrain qualifying: LEC won 13 of 21,
+    VER was 0.292 s faster). For who was quicker, read the lap times or
+    :func:`cumulative_time_delta` at the line.
     """
     aligned = align_by_distance(tel_a, tel_b, num_points=num_points)
     minisectors = minisector_dominance(
@@ -319,7 +357,7 @@ def compare_drivers(
     summary: dict[str, float | str] = {
         "minisectors_a": int(counts.get(driver_a, 0)),
         "minisectors_b": int(counts.get(driver_b, 0)),
-        "dominant_driver": (
+        "more_minisectors": (
             driver_a if counts.get(driver_a, 0) >= counts.get(driver_b, 0) else driver_b
         ),
     }
@@ -333,7 +371,7 @@ def compare_drivers(
         extra={
             "driver_a": driver_a,
             "driver_b": driver_b,
-            "dominant": summary["dominant_driver"],
+            "more_minisectors": summary["more_minisectors"],
             "residual_kmh": round(residual, 1),
         },
     )

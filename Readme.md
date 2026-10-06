@@ -8,7 +8,7 @@
 [FastF1](https://docs.fastf1.dev/). It is the analysis engine behind
 [LapBox](https://lapbox.in), extracted so anyone can use it on FastF1 data.
 
-> **Status: early development release (`0.1.0.dev4`).** In the library so far:
+> **Status: early development release (`0.1.0.dev5`).** In the library so far:
 > `lapbox.telemetry` (one lap, two laps matched by track position), `lapbox.data` (laps,
 > pit stops, stints, gaps), `lapbox.practice` (long runs), `lapbox.pace` (lap cleaning,
 > fuel-corrected race pace, clean air vs traffic, consistency, ideal lap) and `lapbox.tyres`
@@ -20,7 +20,7 @@
 Until the first PyPI release, install from the tagged source:
 
 ```bash
-pip install "lapbox @ https://github.com/racemind-ai/lapbox-sdk/archive/refs/tags/v0.1.0.dev4.tar.gz"
+pip install "lapbox @ https://github.com/racemind-ai/lapbox-sdk/archive/refs/tags/v0.1.0.dev5.tar.gz"
 ```
 
 Python 3.11+. Depends on FastF1, pandas, NumPy and SciPy.
@@ -47,7 +47,7 @@ else:
 ```
 
 ```text
-{'minisectors_a': 15, 'minisectors_b': 6, 'dominant_driver': 'VER', 'max_speed_a': 324.0, 'max_speed_b': 319.0}
+{'minisectors_a': 14, 'minisectors_b': 7, 'more_minisectors': 'VER', 'max_speed_a': 324.0, 'max_speed_b': 319.0}
 +0.056 s
 ```
 
@@ -183,6 +183,15 @@ accurate"*.
 
 ## Limits
 
+- **Winning more minisectors is not being quicker.** Each minisector goes to the driver who
+  spent less time in it, and `summary["more_minisectors"]` counts them — but a driver can
+  lose most minisectors and gain the lap in a few. In 2023 Bahrain qualifying LEC won 13 of
+  21 and VER took pole by 0.292 s. (Until `0.1.0.dev5` minisectors went to the higher mean
+  speed on a 1,000-point grid; on three qualifying sessions 3.4–10.7 % of owners changed.)
+- **Many minisectors are too close to call.** Their owners are decided on a 4,000-point
+  alignment, but a margin can still move by up to 30 ms with the grid, and 22–42 % of
+  minisectors on three qualifying sessions were decided by less than 20 ms. `time_a` and
+  `time_b` are in the table: read a few hundredths as a tie.
 - **The time delta is an estimate.** It integrates each lap's speed over the shared
   distance grid. In the example above it gives +0.056 s at the line; the official
   lap-time gap is +0.118 s.
@@ -236,7 +245,7 @@ accurate"*.
 | `cumulative_time_delta(aligned)` | Time gap along the lap (positive: A ahead) |
 | `channel_delta(aligned, channel)` | Speed / throttle / brake difference |
 | `corner_speeds(aligned, apexes)` | Both drivers' minimum speed at the same corners |
-| `minisector_dominance(tel_a, tel_b, ...)` | Who is faster in each minisector |
+| `minisector_dominance(tel_a, tel_b, ...)` | Who took less time through each minisector (with both times and mean speeds) |
 
 ## What's in `lapbox.data`
 
