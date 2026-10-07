@@ -17,6 +17,7 @@ from lapbox.telemetry import (
     cumulative_time_delta,
     minisector_dominance,
 )
+from lapbox.telemetry.compare import _best_circular_shift
 
 pytestmark = pytest.mark.unit
 
@@ -38,6 +39,16 @@ def _two_corner_lap(n: int = 600, shift: int = 0, scale: float = 1.0) -> pd.Data
     for centre in (n * 0.3, n * 0.7):
         speed -= 220.0 * np.exp(-(((idx - centre) / (n * 0.03)) ** 2))
     return _lap(np.roll(speed, shift), step=5.0 * scale)
+
+
+def _with_clock(lap: pd.DataFrame, *, timedelta: bool = False) -> pd.DataFrame:
+    """The lap with its own timing: seconds since its start, from its speed trace."""
+    distance = lap["Distance"].to_numpy(dtype=float)
+    speed_ms = lap["Speed"].to_numpy(dtype=float) / 3.6
+    seconds = np.concatenate([[0.0], np.cumsum(np.diff(distance) / speed_ms[1:])])
+    if timedelta:
+        return lap.assign(Time=pd.to_timedelta(seconds, unit="s"))
+    return lap.assign(TimeSeconds=seconds)
 
 
 def _misplaced_corner_lap() -> pd.DataFrame:
@@ -108,6 +119,40 @@ class TestAlignByDistance:
         aligned = align_by_distance(a, b, num_points=600, channels=("Speed",))
         assert (aligned["Speed_a"] > aligned["Speed_b"]).mean() > 0.95
 
+    def test_a_fraction_of_a_sample_is_recovered(self) -> None:
+        def trace(i: np.ndarray) -> np.ndarray:
+            speed = np.full(len(i), 300.0)
+            for centre in (180.0, 420.0):
+                speed -= 220.0 * np.exp(-(((i - centre) / 18.0) ** 2))
+            return speed
+
+        idx = np.arange(600, dtype=float)
+        # ``other`` is ``ref`` read 3.4 samples later: rolling it by 3.4 lines them up.
+        assert _best_circular_shift(trace(idx), trace(idx + 3.4), 30) == pytest.approx(3.4, abs=0.1)
+
+    @pytest.mark.parametrize("num_points", [300, 1200])
+    def test_the_match_does_not_depend_on_the_grid(self, num_points: int) -> None:
+        # 125 m round the circuit: 12.5 samples of a 300-point grid, which a shift
+        # by whole samples cannot reach.
+        aligned = align_by_distance(
+            _two_corner_lap(), _two_corner_lap(shift=25), num_points=num_points, channels=("Speed",)
+        )
+        assert alignment_residual(aligned) < 1.0
+
+    def test_laps_with_timing_get_their_clocks(self) -> None:
+        aligned = align_by_distance(_with_clock(_two_corner_lap()), _with_clock(_two_corner_lap()))
+        assert {"Time_a", "Time_b"} <= set(aligned.columns)
+        assert aligned["Time_a"].iloc[0] == pytest.approx(0.0)
+        assert aligned["Time_b"].to_numpy() == pytest.approx(aligned["Time_a"].to_numpy())
+
+    def test_time_and_time_seconds_read_the_same(self) -> None:
+        a, b = _two_corner_lap(), _two_corner_lap(scale=1.01)
+        seconds = align_by_distance(_with_clock(a), _with_clock(b))
+        timedelta = align_by_distance(
+            _with_clock(a, timedelta=True), _with_clock(b, timedelta=True)
+        )
+        pd.testing.assert_frame_equal(seconds, timedelta)
+
 
 class TestAlignmentResidual:
     def test_unmatchable_laps_are_reported(self) -> None:
@@ -153,6 +198,20 @@ class TestCumulativeTimeDelta:
     def test_missing_speed_raises(self) -> None:
         with pytest.raises(KeyError):
             cumulative_time_delta(pd.DataFrame({"Distance": [0.0, 1.0]}))
+
+    @pytest.mark.parametrize("num_points", [500, 2000])
+    def test_with_clocks_it_ends_at_the_lap_time_gap(self, num_points: int) -> None:
+        # B is 3 % slower and its lap starts 125 m further round, so matching it to
+        # A carries part of B's lap across the line.
+        a = _with_clock(_two_corner_lap())
+        slower = _two_corner_lap(shift=25)
+        b = _with_clock(slower.assign(Speed=slower["Speed"] * 0.97))
+        lap_a, lap_b = a["TimeSeconds"].iloc[-1], b["TimeSeconds"].iloc[-1]
+
+        delta = cumulative_time_delta(align_by_distance(a, b, num_points=num_points))
+        assert delta.iloc[0] == 0.0
+        assert delta.iloc[-1] == pytest.approx(lap_b - lap_a, abs=1e-9)
+        assert delta.is_monotonic_increasing  # B loses time all the way round
 
 
 class TestCornerSpeeds:
@@ -209,6 +268,17 @@ class TestMinisectorDominance:
         assert row.mean_speed_a > row.mean_speed_b
         assert row.time_a > row.time_b
         assert row.fastest == "B"
+
+    def test_minisector_times_add_up_to_each_laps_clock(self) -> None:
+        # Same speeds, but B's clock says its lap took half a second longer: the
+        # speed trace gives the shape of each lap, its clock the total.
+        a = _with_clock(_two_corner_lap())
+        b = a.copy()
+        b.loc[300:, "TimeSeconds"] += 0.5
+        ms = minisector_dominance(a, b, driver_a="A", driver_b="B")
+        assert ms["time_a"].sum() == pytest.approx(a["TimeSeconds"].iloc[-1], abs=1e-9)
+        assert ms["time_b"].sum() == pytest.approx(b["TimeSeconds"].iloc[-1], abs=1e-9)
+        assert (ms["fastest"] == "A").all()
 
 
 class TestCompareDrivers:
@@ -283,8 +353,13 @@ class TestRawFastF1Telemetry:
     ) -> None:
         raw = compare_drivers(fastf1_tel_a, fastf1_tel_b, driver_a="VER", driver_b="HAM")
         plain = compare_drivers(lap_tel_a, lap_tel_b, driver_a="VER", driver_b="HAM")
-        pd.testing.assert_frame_equal(raw.aligned, plain.aligned)
-        pd.testing.assert_frame_equal(raw.minisectors, plain.minisectors)
+        # FastF1's own clock comes through; the plain frames have none.
+        assert {"Time_a", "Time_b"} <= set(raw.aligned.columns)
+        assert not {"Time_a", "Time_b"} & set(plain.aligned.columns)
+        pd.testing.assert_frame_equal(raw.aligned[plain.aligned.columns], plain.aligned)
+        same = ["minisector", "start_distance", "end_distance", "mean_speed_a", "mean_speed_b"]
+        pd.testing.assert_frame_equal(raw.minisectors[same], plain.minisectors[same])
+        assert raw.minisectors["fastest"].tolist() == plain.minisectors["fastest"].tolist()
         assert raw.summary == plain.summary
         assert raw.matched
         assert raw.residual == pytest.approx(plain.residual)

@@ -16,7 +16,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from lapbox.telemetry.lap import ANALYSIS_CHANNELS, resample_by_distance
+from lapbox.telemetry.lap import ANALYSIS_CHANNELS, _monotonic_distance, resample_by_distance
 
 logger = logging.getLogger(__name__)
 
@@ -27,29 +27,77 @@ logger = logging.getLogger(__name__)
 # real case measured across a season was 2.6 %.
 _MAX_SHIFT_FRACTION = 0.05
 
-# Minisector owners are decided on their own fine grid, whatever grid the laps are
-# compared on: the alignment slides a lap by whole grid steps, and that moves time
-# between neighbouring minisectors. On 2023 Bahrain qualifying (45 pairs) owners
-# flipped in 131 of 945 minisectors between 500 and 1,000 points, 66 between 1,000
-# and 2,000, and 39 between 2,000 and 4,000.
+# The offset between two laps is searched on its own fine grid and refined to a
+# fraction of a sample, so it doesn't depend on the grid the laps are compared on.
+# Shifting by whole grid samples instead flipped minisector owners in 102 of 945
+# minisectors between 500 and 4,000 points (2023 Bahrain qualifying, 45 pairs);
+# with this, 17.
+_SHIFT_POINTS = 10000
+_COARSE_STEP = 10
+
+# Minisectors are measured on their own alignment, whatever grid the comparison uses.
 _MINISECTOR_POINTS = 4000
 
 
-def _best_circular_shift(ref: np.ndarray, other: np.ndarray, max_shift: int) -> int:
-    """Return the circular shift of ``other`` that best matches ``ref``.
+def _match_error(ref: np.ndarray, other: np.ndarray, shift: int) -> float:
+    return float(np.mean((np.roll(other, shift) - ref) ** 2))
+
+
+def _best_circular_shift(ref: np.ndarray, other: np.ndarray, max_shift: int) -> float:
+    """Return the circular shift of ``other`` that best matches ``ref``, in samples.
 
     A lap is a closed loop sampled over exactly one circuit of it, so rolling
     the trace is the physically correct way to slide one lap against another.
-    Matching is on speed, which has sharp, unmistakable corner minima.
+    Matching is on speed, which has sharp, unmistakable corner minima. Every
+    ``_COARSE_STEP``-th shift is tried first, then every shift around the best
+    one, then a parabola through the match error at the best shift and its two
+    neighbours gives the fraction of a sample.
     """
     if max_shift < 1 or len(ref) != len(other) or len(ref) < 3:
-        return 0
-    best_shift, best_err = 0, float("inf")
-    for shift in range(-max_shift, max_shift + 1):
-        err = float(np.mean((np.roll(other, shift) - ref) ** 2))
-        if err < best_err:
-            best_err, best_shift = err, shift
-    return best_shift
+        return 0.0
+    coarse = range(-max_shift, max_shift + 1, _COARSE_STEP)
+    best = min(coarse, key=lambda s: _match_error(ref, other, s))
+    around = range(max(-max_shift, best - _COARSE_STEP), min(max_shift, best + _COARSE_STEP) + 1)
+    best = min(around, key=lambda s: _match_error(ref, other, s))
+    if -max_shift < best < max_shift:
+        before, at, after = (_match_error(ref, other, best + d) for d in (-1, 0, 1))
+        curvature = before - 2 * at + after
+        if curvature > 0:
+            return best + 0.5 * (before - after) / curvature
+    return float(best)
+
+
+def _shift_metres(
+    tel_a: pd.DataFrame, tel_b: pd.DataFrame, a_lo: float, a_span: float, b_lo: float, b_span: float
+) -> float:
+    """How far to slide B (already stretched to A's length) to match A's speed trace."""
+    fine_a = resample_by_distance(tel_a, num_points=_SHIFT_POINTS, channels=("Speed",))
+    fine_b = resample_by_distance(tel_b, num_points=_SHIFT_POINTS, channels=("Speed",))
+    fine = np.linspace(a_lo, a_lo + a_span, _SHIFT_POINTS)
+    b_distance = (fine_b["Distance"].to_numpy(dtype=float) - b_lo) / b_span * a_span + a_lo
+    speed_a = np.interp(fine, fine_a["Distance"], fine_a["Speed"])
+    speed_b = np.interp(fine, b_distance, fine_b["Speed"])
+    max_shift = int(_SHIFT_POINTS * _MAX_SHIFT_FRACTION)
+    return _best_circular_shift(speed_a, speed_b, max_shift) * a_span / (_SHIFT_POINTS - 1)
+
+
+def _clock(tel: pd.DataFrame) -> tuple[np.ndarray, np.ndarray] | None:
+    """A lap's own timing: seconds since the start of the lap, against distance.
+
+    Read from ``TimeSeconds`` when present, else FastF1's ``Time`` (a Timedelta
+    from the lap's start). ``None`` when the lap carries neither.
+    """
+    if "TimeSeconds" in tel.columns:
+        seconds = pd.to_numeric(tel["TimeSeconds"], errors="coerce")
+    elif "Time" in tel.columns and pd.api.types.is_timedelta64_dtype(tel["Time"]):
+        seconds = tel["Time"].dt.total_seconds()
+    else:
+        return None
+    frame = pd.DataFrame({"Distance": tel["Distance"], "seconds": seconds}).dropna()
+    if len(frame) < 2:
+        return None
+    ordered = _monotonic_distance(frame)
+    return ordered["Distance"].to_numpy(dtype=float), ordered["seconds"].to_numpy(dtype=float)
 
 
 def align_by_distance(
@@ -73,8 +121,17 @@ def align_by_distance(
 
     So B is put onto A's basis in two steps: its distance axis is rescaled to
     A's lap length, then it is slid against A by the circular offset that best
-    matches the two speed traces. A keeps its own basis, which means apex
-    distances taken from A's lap stay valid against the result.
+    matches the two speed traces. The offset is found on a fine grid of its own,
+    to a fraction of a metre, so it doesn't depend on ``num_points``. A keeps its
+    own basis, which means apex distances taken from A's lap stay valid against
+    the result.
+
+    When both laps carry their timing (FastF1's ``Time``, or ``TimeSeconds``),
+    ``Time{suffix}`` columns give each driver's own clock at every point: seconds
+    since the start of A's lap for A, and B's clock at the matching place for B
+    (a place before B's line belongs to the end of B's lap, one lap time
+    earlier). :func:`cumulative_time_delta` and :func:`minisector_dominance` read
+    them in preference to integrating speed.
 
     Returns a DataFrame with ``Distance`` plus ``{channel}{suffix}`` columns.
     """
@@ -93,33 +150,37 @@ def align_by_distance(
     # Stretch B's lap onto A's length so the same fraction of the lap lines up.
     b_span = b_hi - b_lo
     a_span = a_hi - a_lo
-    if b_span > 0 and a_span > 0:
+    stretched = b_span > 0 and a_span > 0
+    if stretched:
         b_distance = (res_b["Distance"].to_numpy(dtype=float) - b_lo) / b_span * a_span + a_lo
     else:
         b_distance = res_b["Distance"].to_numpy(dtype=float)
 
-    sampled_b = {
-        channel: np.interp(grid, b_distance, res_b[channel]) for channel in common_channels
-    }
-
     # Then slide B until its corners sit on top of A's.
-    shift = 0
-    if "Speed" in common_channels:
-        speed_a = np.interp(grid, res_a["Distance"], res_a["Speed"])
-        max_shift = int(num_points * _MAX_SHIFT_FRACTION)
-        shift = _best_circular_shift(speed_a, sampled_b["Speed"], max_shift)
+    shift = 0.0
+    if "Speed" in common_channels and stretched:
+        shift = _shift_metres(tel_a, tel_b, a_lo, a_span, b_lo, b_span)
         if shift:
-            step = a_span / max(num_points - 1, 1)
             logger.info(
-                "Laps re-aligned before comparison",
-                extra={"shift_samples": shift, "shift_metres": round(shift * step, 1)},
+                "Laps re-aligned before comparison", extra={"shift_metres": round(shift, 1)}
             )
+    # B at (x - shift), wrapped around the lap.
+    positions = (grid - a_lo - shift) % a_span + a_lo if shift else grid
 
     out: dict[str, np.ndarray] = {"Distance": grid}
     for channel in common_channels:
         out[f"{channel}{suffixes[0]}"] = np.interp(grid, res_a["Distance"], res_a[channel])
-        out[f"{channel}{suffixes[1]}"] = (
-            np.roll(sampled_b[channel], shift) if shift else sampled_b[channel]
+        out[f"{channel}{suffixes[1]}"] = np.interp(positions, b_distance, res_b[channel])
+
+    clocks = _clock(tel_a), _clock(tel_b)
+    if stretched and clocks[0] is not None and clocks[1] is not None:
+        (dist_a, secs_a), (dist_b, secs_b) = clocks
+        lap_b = float(np.interp(b_hi, dist_b, secs_b) - np.interp(b_lo, dist_b, secs_b))
+        into_b = (grid - a_lo - shift) / a_span * b_span  # metres into B's lap
+        laps = np.floor(into_b / b_span)
+        out[f"Time{suffixes[0]}"] = np.interp(grid, dist_a, secs_a)
+        out[f"Time{suffixes[1]}"] = (
+            np.interp(into_b - laps * b_span + b_lo, dist_b, secs_b) + laps * lap_b
         )
     return pd.DataFrame(out)
 
@@ -170,15 +231,24 @@ def cumulative_time_delta(
 ) -> pd.Series:
     """Return the cumulative time gap (seconds) between two aligned laps.
 
-    Integrates ``dt = dx / v`` for each driver over the shared distance grid and
-    returns ``time_b - time_a`` per sample: positive means driver A is ahead
+    Returns ``time_b - time_a`` per sample: positive means driver A is ahead
     (has taken less time to reach that point), matching the ``a - b`` sign
-    convention of :func:`channel_delta`.
+    convention of :func:`channel_delta`. It starts at 0.
 
-    Speeds are clamped to a 1 km/h floor so standing starts or data glitches
-    cannot divide by zero.
+    It integrates ``dt = dx / v`` for each driver over the shared grid (speeds
+    clamped to a 1 km/h floor), which gives the shape of each lap. When the laps
+    carry their own clocks (``Time{suffix}`` columns, which :func:`align_by_distance`
+    adds), each driver's integral is scaled to add up to their measured lap time,
+    so the gap ends exactly at the lap-time gap. On 2023 Bahrain, 2025 Monza,
+    2025 Silverstone and 2026 Melbourne qualifying (45 pairs each) it was then within
+    a median of 29 to 42 ms (at most 143 ms) of the official gap at the sector lines. Integrating
+    speed alone ended a median of 92 to 113 ms (up to 360 ms) from the official gap
+    and on the wrong side of it in 2 to 9 of 45 pairs; reading the clocks
+    point by point was exact at the line but rougher in between (up to 199 ms at
+    the sector lines), because a few metres of misplacement in a slow corner is a
+    large time.
     """
-    t_a, t_b = _sample_times(aligned, suffixes)
+    t_a, t_b = _timed_samples(aligned, suffixes)
     return pd.Series(np.cumsum(t_b - t_a), index=aligned.index, name="time_delta")
 
 
@@ -195,6 +265,19 @@ def _sample_times(
     v_a = np.maximum(aligned[col_a].to_numpy(dtype=float), 1.0) / 3.6  # km/h -> m/s
     v_b = np.maximum(aligned[col_b].to_numpy(dtype=float), 1.0) / 3.6
     return dx / v_a, dx / v_b
+
+
+def _timed_samples(
+    aligned: pd.DataFrame, suffixes: tuple[str, str] = ("_a", "_b")
+) -> tuple[np.ndarray, np.ndarray]:
+    """:func:`_sample_times`, each lap scaled to its own clock's lap time when it has one."""
+    t_a, t_b = _sample_times(aligned, suffixes)
+    time_a, time_b = f"Time{suffixes[0]}", f"Time{suffixes[1]}"
+    if time_a in aligned.columns and time_b in aligned.columns and t_a.sum() > 0 and t_b.sum() > 0:
+        lap_a = float(aligned[time_a].iloc[-1] - aligned[time_a].iloc[0])
+        lap_b = float(aligned[time_b].iloc[-1] - aligned[time_b].iloc[0])
+        t_a, t_b = t_a * (lap_a / t_a.sum()), t_b * (lap_b / t_b.sum())
+    return t_a, t_b
 
 
 def corner_speeds(
@@ -249,18 +332,16 @@ def minisector_dominance(
 ) -> pd.DataFrame:
     """Split the lap into equal-distance minisectors and flag the faster driver in each.
 
-    A minisector goes to the driver who spends less time in it (``dx / v`` summed
-    over its stretch, as :func:`cumulative_time_delta` integrates), so the
-    minisector times add up to the time gap at the line on the same grid. Mean
-    speeds are kept for reference, but they don't decide: a minisector holding a
-    slow corner and a straight can have the higher mean speed and still take
-    longer. On 2023 Bahrain, 2025 Monza and 2026 Melbourne qualifying the two
-    disagreed in 2.8 to 7.4 % of minisectors.
+    A minisector goes to the driver who spends less time in it: ``dx / v`` summed
+    over its stretch, each lap scaled to its own clock's lap time when the laps
+    carry their timing, exactly as :func:`cumulative_time_delta` builds the gap. So
+    the minisector times add up to the time gap at the line. Mean speeds are kept
+    for reference, but they don't decide: a minisector holding a slow corner and a
+    straight can have the higher mean speed and still take longer.
 
-    The laps are aligned on their own 4,000-point grid. Even there a minisector's
-    margin moved by up to 30 ms between 2,000 and 4,000 points, and 29 % of 945
-    minisectors (2023 Bahrain qualifying) were decided by less than 20 ms: read a
-    margin of a few hundredths as too close to call.
+    Many minisectors are close: on 2023 Bahrain qualifying 29 % of 945 were
+    decided by less than 20 ms. Read a margin of a few hundredths as too close
+    to call.
 
     Returns:
         DataFrame with ``minisector``, ``start_distance``, ``end_distance``,
@@ -273,13 +354,16 @@ def minisector_dominance(
     edges = np.linspace(lo, hi, num_minisectors + 1)
     # Bin index 0..num_minisectors-1 for each sample.
     idx = np.clip(np.digitize(distance, edges[1:-1]), 0, num_minisectors - 1)
-    t_a, t_b = _sample_times(aligned)
+    t_a, t_b = _timed_samples(aligned)
+    times = {
+        ms: (float(t_a[idx == ms].sum()), float(t_b[idx == ms].sum()))
+        for ms in range(num_minisectors)
+    }
 
-    frame = aligned.assign(_ms=idx, _t_a=t_a, _t_b=t_b)
+    frame = aligned.assign(_ms=idx)
     rows = []
     for ms, group in frame.groupby("_ms"):
-        time_a = float(group["_t_a"].sum())
-        time_b = float(group["_t_b"].sum())
+        time_a, time_b = times[ms]
         rows.append(
             {
                 "minisector": int(ms) + 1,
@@ -344,7 +428,7 @@ def compare_drivers(
 
     ``summary["more_minisectors"]`` is the driver who won more minisectors: a
     count, not who was quicker. A driver can lose most minisectors and still
-    take pole by gaining big in a few (2023 Bahrain qualifying: LEC won 13 of 21,
+    take pole by gaining big in a few (2023 Bahrain qualifying: LEC won 12 of 21,
     VER was 0.292 s faster). For who was quicker, read the lap times or
     :func:`cumulative_time_delta` at the line.
     """
