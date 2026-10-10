@@ -8,7 +8,7 @@
 [FastF1](https://docs.fastf1.dev/). It is the analysis engine behind
 [LapBox](https://lapbox.in), extracted so anyone can use it on FastF1 data.
 
-> **Status: early development release (`0.1.0.dev6`).** In the library so far:
+> **Status: early development release (`0.1.0.dev7`).** In the library so far:
 > `lapbox.telemetry` (one lap, two laps matched by track position), `lapbox.data` (laps,
 > pit stops, stints, gaps), `lapbox.practice` (long runs), `lapbox.pace` (lap cleaning,
 > fuel-corrected race pace, clean air vs traffic, consistency, ideal lap) and `lapbox.tyres`
@@ -20,7 +20,7 @@
 Until the first PyPI release, install from the tagged source:
 
 ```bash
-pip install "lapbox @ https://github.com/racemind-ai/lapbox-sdk/archive/refs/tags/v0.1.0.dev6.tar.gz"
+pip install "lapbox @ https://github.com/racemind-ai/lapbox-sdk/archive/refs/tags/v0.1.0.dev7.tar.gz"
 ```
 
 Python 3.11+. Depends on FastF1, pandas, NumPy and SciPy.
@@ -42,6 +42,8 @@ result = compare_drivers(ver, nor, driver_a="VER", driver_b="NOR")
 if result.matched:
     print(result.summary)
     print(f"{cumulative_time_delta(result.aligned).iloc[-1]:+.3f} s")
+    gain = result.segments.loc[result.segments["time_delta"].idxmax()]
+    print(f"VER gains most from {gain.start_distance:.0f} to {gain.end_distance:.0f} m: {gain.time_delta:+.3f} s")
 else:
     print(f"Can't compare: laps differ by {result.residual:.0f} km/h RMS after alignment")
 ```
@@ -49,6 +51,7 @@ else:
 ```text
 {'minisectors_a': 14, 'minisectors_b': 7, 'more_minisectors': 'VER', 'max_speed_a': 324.0, 'max_speed_b': 319.0}
 +0.118 s
+VER gains most from 2957 to 4765 m: +0.202 s
 ```
 
 ### Long runs in practice
@@ -175,8 +178,8 @@ no global shift can undo that. `compare_drivers` reports how far apart the two s
 traces still are after alignment (`result.residual`, km/h RMS), and `result.matched` is
 `False` above 15 km/h. That threshold was measured on 250 driver pairs: it caught 32 of
 33 physically impossible pairs and withheld 8 of 217 sound ones. When `matched` is
-`False`, don't use the time delta, speed delta, corner speeds or minisectors — they
-describe the mismatch, not the drivers.
+`False`, don't use the time delta, speed delta, corner speeds, minisectors or segments —
+they describe the mismatch, not the drivers.
 
 FastF1's own `utils.delta_time` is deprecated and documented as *"not actually very
 accurate"*.
@@ -195,9 +198,19 @@ accurate"*.
   scaled to its measured lap time, so the gap ends exactly at the official one, as in the
   example above. In between it is as good as the alignment: at the official sector lines it
   was a median of 29–42 ms off (at most 143 ms), and on the wrong side in 2–7 of 90 checks
-  where the gap was tiny (four qualifying sessions, 45 pairs each). Without a clock the
+  (four qualifying sessions, 45 pairs each), each time where the official gap was 59 ms or
+  less; the median gap at those lines was 181 ms. Without a clock the
   integral stands alone: it ended a median of 92–113 ms from the official gap and on the
   wrong side in 2–9 of 45 pairs.
+- **Where time changes hands is less certain than how much.** A few metres of misplacement
+  between two laps cost the most where the car is slowest: the same lap compared with itself,
+  with 5 m of distance error at its slowest corner, shows the gap curve gaining 0.10 s and
+  losing 0.17 s around that corner. So read gains and losses from `segment_gaps`, which
+  splits the lap at its speed peaks, where misplacement costs almost nothing: in that case no
+  segment moved by more than 49 ms. On six qualifying sessions the curve's biggest rise and
+  fall were a median 113 ms from a gap rebuilt from the cars' positions, the biggest gaining
+  and losing segments 65 ms, about that check's own accuracy. A segment often holds several
+  corners.
 - **Corners are found where the car slows down,** so the count won't match the
   circuit's official corner numbering: flat-out kinks produce no speed minimum. What
   you get is the same corners on every lap of a circuit, which is what comparisons need.
@@ -242,13 +255,14 @@ accurate"*.
 
 | Two laps | |
 |---|---|
-| `compare_drivers(tel_a, tel_b, ...)` | Alignment, minisectors, summary, `residual` and `matched` in one call |
+| `compare_drivers(tel_a, tel_b, ...)` | Alignment, minisectors, segments, summary, `residual` and `matched` in one call |
 | `align_by_distance(tel_a, tel_b)` | Both laps matched by track position |
 | `alignment_residual(aligned)`, `MAX_ALIGNMENT_RESIDUAL` | How well they matched, and the cut-off |
 | `cumulative_time_delta(aligned)` | Time gap along the lap (positive: A ahead), from the laps' own clocks when they have them |
 | `channel_delta(aligned, channel)` | Speed / throttle / brake difference |
 | `corner_speeds(aligned, apexes)` | Both drivers' minimum speed at the same corners |
 | `minisector_dominance(tel_a, tel_b, ...)` | Who took less time through each minisector (with both times and mean speeds) |
+| `segment_gaps(aligned)` | Each driver's time between the lap's speed peaks: where time changes hands, read where misplacement costs least |
 
 ## What's in `lapbox.data`
 

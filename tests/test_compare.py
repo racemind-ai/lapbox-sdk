@@ -16,6 +16,7 @@ from lapbox.telemetry import (
     corner_speeds,
     cumulative_time_delta,
     minisector_dominance,
+    segment_gaps,
 )
 from lapbox.telemetry.compare import _best_circular_shift
 
@@ -281,6 +282,72 @@ class TestMinisectorDominance:
         assert (ms["fastest"] == "A").all()
 
 
+class TestSegmentGaps:
+    def test_segments_end_at_the_speed_peaks(self) -> None:
+        aligned = align_by_distance(_two_corner_lap(), _two_corner_lap(scale=0.98))
+        seg = segment_gaps(aligned)
+        distance = aligned["Distance"]
+        assert list(seg["segment"]) == [1, 2]
+        assert seg["start_distance"].iloc[0] == distance.iloc[0]
+        assert seg["end_distance"].iloc[-1] == distance.iloc[-1]
+        # The straight between the corners (apexes at 30 % and 70 % of the lap).
+        assert seg["end_distance"].iloc[0] == pytest.approx(distance.iloc[-1] / 2, rel=0.01)
+
+    def test_segments_add_up_to_the_gap_and_each_laps_clock(self) -> None:
+        a = _with_clock(_two_corner_lap())
+        slower = _two_corner_lap(shift=25)
+        b = _with_clock(slower.assign(Speed=slower["Speed"] * 0.97))
+        aligned = align_by_distance(a, b, num_points=500)
+        seg = segment_gaps(aligned)
+        gap = cumulative_time_delta(aligned).iloc[-1]
+        assert seg["time_delta"].sum() == pytest.approx(gap, abs=1e-9)
+        assert seg["time_a"].sum() == pytest.approx(a["TimeSeconds"].iloc[-1], abs=1e-9)
+        assert seg["time_b"].sum() == pytest.approx(b["TimeSeconds"].iloc[-1], abs=1e-9)
+        assert (seg["time_delta"] > 0).all()  # B is slower everywhere
+
+    def test_swapping_the_drivers_keeps_the_segments(self) -> None:
+        aligned = align_by_distance(
+            _with_clock(_two_corner_lap()), _with_clock(_two_corner_lap(scale=0.98))
+        )
+        swapped = aligned.rename(
+            columns={
+                "Speed_a": "Speed_b",
+                "Speed_b": "Speed_a",
+                "Time_a": "Time_b",
+                "Time_b": "Time_a",
+            }
+        )
+        seg, back = segment_gaps(aligned), segment_gaps(swapped)
+        pd.testing.assert_frame_equal(
+            back[["segment", "start_distance", "end_distance"]],
+            seg[["segment", "start_distance", "end_distance"]],
+        )
+        np.testing.assert_allclose(back["time_delta"], -seg["time_delta"], atol=1e-12)
+
+    def test_a_misplaced_corner_moves_time_only_within_its_segment(self) -> None:
+        # The same lap twice, B's distance 5 m out around the first corner: no time
+        # changes hands anywhere, but the gap curve swings around that corner.
+        a = _with_clock(_two_corner_lap())
+        distance = a["Distance"].to_numpy(dtype=float)
+        apex = distance[np.argmin(a["Speed"].to_numpy())]
+        b = a.assign(Distance=distance + 5.0 * np.clip(1 - np.abs(distance - apex) / 150, 0, 1))
+        aligned = align_by_distance(a, b, num_points=500)
+        curve = cumulative_time_delta(aligned)
+        around = (aligned["Distance"] - apex).abs() < 300
+        assert curve[around].max() - curve[around].min() > 0.05
+        assert segment_gaps(aligned)["time_delta"].abs().max() < 0.001
+
+    def test_a_lap_without_peaks_is_one_segment(self) -> None:
+        aligned = align_by_distance(_lap(np.full(200, 250.0)), _lap(np.full(200, 240.0)))
+        [row] = segment_gaps(aligned).itertuples()
+        assert (row.start_distance, row.end_distance) == (0.0, aligned["Distance"].iloc[-1])
+        assert row.time_delta > 0
+
+    def test_missing_speed_raises(self) -> None:
+        with pytest.raises(KeyError):
+            segment_gaps(pd.DataFrame({"Distance": [0.0, 1.0]}))
+
+
 class TestCompareDrivers:
     def test_summary(self, lap_tel_a: pd.DataFrame, lap_tel_b: pd.DataFrame) -> None:
         result = compare_drivers(lap_tel_a, lap_tel_b, driver_a="VER", driver_b="HAM")
@@ -308,6 +375,14 @@ class TestCompareDrivers:
         own_grid = align_by_distance(lap_tel_a, lap_tel_b, num_points=4000, channels=("Speed",))
         gap = cumulative_time_delta(own_grid).iloc[-1]
         assert (ms["time_b"] - ms["time_a"]).sum() == pytest.approx(gap, abs=1e-9)
+
+    def test_segments_are_on_the_aligned_grid(
+        self, lap_tel_a: pd.DataFrame, lap_tel_b: pd.DataFrame
+    ) -> None:
+        result = compare_drivers(
+            lap_tel_a, lap_tel_b, driver_a="VER", driver_b="HAM", num_points=400
+        )
+        pd.testing.assert_frame_equal(result.segments, segment_gaps(result.aligned))
 
 
 class TestComparisonMatched:
@@ -360,6 +435,8 @@ class TestRawFastF1Telemetry:
         same = ["minisector", "start_distance", "end_distance", "mean_speed_a", "mean_speed_b"]
         pd.testing.assert_frame_equal(raw.minisectors[same], plain.minisectors[same])
         assert raw.minisectors["fastest"].tolist() == plain.minisectors["fastest"].tolist()
+        ends = ["segment", "start_distance", "end_distance"]
+        pd.testing.assert_frame_equal(raw.segments[ends], plain.segments[ends])
         assert raw.summary == plain.summary
         assert raw.matched
         assert raw.residual == pytest.approx(plain.residual)

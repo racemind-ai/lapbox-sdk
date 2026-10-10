@@ -13,6 +13,7 @@ from lapbox.telemetry.compare import (
     corner_speeds,
     cumulative_time_delta,
     minisector_dominance,
+    segment_gaps,
 )
 from lapbox.telemetry.lap import (
     ANALYSIS_CHANNELS,
@@ -51,4 +52,5 @@ __all__ = [
     "cumulative_time_delta",
     "corner_speeds",
     "minisector_dominance",
+    "segment_gaps",
 ]
