@@ -21,8 +21,8 @@ from lapbox.telemetry.lap import (
     ANALYSIS_CHANNELS,
     _monotonic_distance,
     _seconds,
-    frozen_stretches,
-    resample_by_distance,
+    detect_frozen_stretches,
+    resample,
 )
 
 logger = logging.getLogger(__name__)
@@ -78,8 +78,8 @@ def _shift_metres(
     tel_a: pd.DataFrame, tel_b: pd.DataFrame, a_lo: float, a_span: float, b_lo: float, b_span: float
 ) -> float:
     """How far to slide B (already stretched to A's length) to match A's speed trace."""
-    fine_a = resample_by_distance(tel_a, num_points=_SHIFT_POINTS, channels=("Speed",))
-    fine_b = resample_by_distance(tel_b, num_points=_SHIFT_POINTS, channels=("Speed",))
+    fine_a = resample(tel_a, num_points=_SHIFT_POINTS, channels=("Speed",))
+    fine_b = resample(tel_b, num_points=_SHIFT_POINTS, channels=("Speed",))
     fine = np.linspace(a_lo, a_lo + a_span, _SHIFT_POINTS)
     b_distance = (fine_b["Distance"].to_numpy(dtype=float) - b_lo) / b_span * a_span + a_lo
     speed_a = np.interp(fine, fine_a["Distance"], fine_a["Speed"])
@@ -104,7 +104,7 @@ def _clock(tel: pd.DataFrame) -> tuple[np.ndarray, np.ndarray] | None:
     return ordered["Distance"].to_numpy(dtype=float), ordered["seconds"].to_numpy(dtype=float)
 
 
-def align_by_distance(
+def align(
     tel_a: pd.DataFrame,
     tel_b: pd.DataFrame,
     *,
@@ -134,7 +134,7 @@ def align_by_distance(
     ``Time{suffix}`` columns give each driver's own clock at every point: seconds
     since the start of A's lap for A, and B's clock at the matching place for B
     (a place before B's line belongs to the end of B's lap, one lap time
-    earlier). :func:`cumulative_time_delta` and :func:`minisector_dominance` read
+    earlier). :func:`delta_time` and :func:`minisector_dominance` read
     them in preference to integrating speed.
 
     Returns a DataFrame with ``Distance`` plus ``{channel}{suffix}`` columns.
@@ -144,8 +144,8 @@ def align_by_distance(
         shared = [c for c in tel_a.columns if c in tel_b.columns]
         common_channels = tuple(c for c in ANALYSIS_CHANNELS if c in shared)
 
-    res_a = resample_by_distance(tel_a, num_points=num_points, channels=common_channels)
-    res_b = resample_by_distance(tel_b, num_points=num_points, channels=common_channels)
+    res_a = resample(tel_a, num_points=num_points, channels=common_channels)
+    res_b = resample(tel_b, num_points=num_points, channels=common_channels)
 
     a_lo, a_hi = float(res_a["Distance"].min()), float(res_a["Distance"].max())
     b_lo, b_hi = float(res_b["Distance"].min()), float(res_b["Distance"].max())
@@ -201,7 +201,7 @@ MAX_ALIGNMENT_RESIDUAL = 15.0
 def alignment_residual(aligned: pd.DataFrame, suffixes: tuple[str, str] = ("_a", "_b")) -> float:
     """Return the RMS speed difference (km/h) between two aligned laps.
 
-    A measure of how well :func:`align_by_distance` managed to put the two laps
+    A measure of how well :func:`align` managed to put the two laps
     on the same piece of track. Compare against :data:`MAX_ALIGNMENT_RESIDUAL`:
     above it, the laps could not be matched and anything derived by comparing
     them sample-for-sample -- corner speeds, dominance, the time gap -- is
@@ -230,9 +230,7 @@ def channel_delta(
     return aligned[col_a] - aligned[col_b]
 
 
-def cumulative_time_delta(
-    aligned: pd.DataFrame, suffixes: tuple[str, str] = ("_a", "_b")
-) -> pd.Series:
+def delta_time(aligned: pd.DataFrame, suffixes: tuple[str, str] = ("_a", "_b")) -> pd.Series:
     """Return the cumulative time gap (seconds) between two aligned laps.
 
     Returns ``time_b - time_a`` per sample: positive means driver A is ahead
@@ -241,7 +239,7 @@ def cumulative_time_delta(
 
     It integrates ``dt = dx / v`` for each driver over the shared grid (speeds
     clamped to a 1 km/h floor), which gives the shape of each lap. When the laps
-    carry their own clocks (``Time{suffix}`` columns, which :func:`align_by_distance`
+    carry their own clocks (``Time{suffix}`` columns, which :func:`align`
     adds), each driver's integral is scaled to add up to their measured lap time,
     so the gap ends exactly at the lap-time gap. On 2023 Bahrain, 2025 Monza,
     2025 Silverstone and 2026 Melbourne qualifying (45 pairs each) it was then within
@@ -338,7 +336,7 @@ def minisector_dominance(
 
     A minisector goes to the driver who spends less time in it: ``dx / v`` summed
     over its stretch, each lap scaled to its own clock's lap time when the laps
-    carry their timing, exactly as :func:`cumulative_time_delta` builds the gap. So
+    carry their timing, exactly as :func:`delta_time` builds the gap. So
     the minisector times add up to the time gap at the line. Mean speeds are kept
     for reference, but they don't decide: a minisector holding a slow corner and a
     straight can have the higher mean speed and still take longer.
@@ -352,7 +350,7 @@ def minisector_dominance(
         ``mean_speed_a``, ``mean_speed_b``, ``time_a``, ``time_b`` (seconds) and
         ``fastest`` (driver label; ties go to driver A).
     """
-    aligned = align_by_distance(tel_a, tel_b, num_points=_MINISECTOR_POINTS, channels=("Speed",))
+    aligned = align(tel_a, tel_b, num_points=_MINISECTOR_POINTS, channels=("Speed",))
     distance = aligned["Distance"].to_numpy()
     lo, hi = distance.min(), distance.max()
     edges = np.linspace(lo, hi, num_minisectors + 1)
@@ -395,7 +393,7 @@ def segment_gaps(
     through the corners after it, to the end of the next. The peaks are those of
     the two laps' mean speed that stand at least ``prominence`` km/h above their
     surroundings, so swapping the drivers keeps the same segments. Times are built
-    exactly as :func:`cumulative_time_delta` builds the gap, so the segments'
+    exactly as :func:`delta_time` builds the gap, so the segments'
     ``time_delta`` add up to its value at the line.
 
     Where in the lap time changes hands depends on where each lap is placed, and a
@@ -438,14 +436,14 @@ def segment_gaps(
 
 
 @dataclass(slots=True)
-class ComparisonResult:
+class Comparison:
     """Structured output of a two-driver telemetry comparison.
 
     ``residual`` is :func:`alignment_residual` of ``aligned``: how far apart the
     two speed traces still are after alignment, in km/h RMS. ``segments`` is
     :func:`segment_gaps` of ``aligned``: each driver's time between the lap's
     speed peaks. ``frozen_a`` and ``frozen_b`` are each lap's
-    :func:`~lapbox.telemetry.lap.frozen_stretches`: where its car data froze.
+    :func:`~lapbox.telemetry.lap.detect_frozen_stretches`: where its car data froze.
     """
 
     driver_a: str
@@ -473,7 +471,7 @@ class ComparisonResult:
         return self.residual <= MAX_ALIGNMENT_RESIDUAL
 
 
-def compare_drivers(
+def compare(
     tel_a: pd.DataFrame,
     tel_b: pd.DataFrame,
     *,
@@ -481,10 +479,10 @@ def compare_drivers(
     driver_b: str,
     num_points: int = 1000,
     num_minisectors: int = 21,
-) -> ComparisonResult:
+) -> Comparison:
     """Run the full comparison between two laps and summarise the result.
 
-    Check :attr:`ComparisonResult.matched` before using anything that compares
+    Check :attr:`Comparison.matched` before using anything that compares
     the two laps sample-for-sample: a telemetry dropout can leave one lap
     impossible to line up with the other, and ``frozen_a`` / ``frozen_b`` say
     where the timing feed's car data froze.
@@ -500,9 +498,9 @@ def compare_drivers(
     count, not who was quicker. A driver can lose most minisectors and still
     take pole by gaining big in a few (2023 Bahrain qualifying: LEC won 12 of 21,
     VER was 0.292 s faster). For who was quicker, read the lap times or
-    :func:`cumulative_time_delta` at the line.
+    :func:`delta_time` at the line.
     """
-    aligned = align_by_distance(tel_a, tel_b, num_points=num_points)
+    aligned = align(tel_a, tel_b, num_points=num_points)
     minisectors = minisector_dominance(
         tel_a, tel_b, driver_a=driver_a, driver_b=driver_b, num_minisectors=num_minisectors
     )
@@ -529,7 +527,7 @@ def compare_drivers(
             "residual_kmh": round(residual, 1),
         },
     )
-    return ComparisonResult(
+    return Comparison(
         driver_a=driver_a,
         driver_b=driver_b,
         aligned=aligned,
@@ -537,6 +535,6 @@ def compare_drivers(
         summary=summary,
         residual=residual,
         segments=segment_gaps(aligned),
-        frozen_a=frozen_stretches(tel_a),
-        frozen_b=frozen_stretches(tel_b),
+        frozen_a=detect_frozen_stretches(tel_a),
+        frozen_b=detect_frozen_stretches(tel_b),
     )

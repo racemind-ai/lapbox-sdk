@@ -10,13 +10,13 @@ from lapbox.telemetry import (
     ANALYSIS_CHANNELS,
     TelemetryAnalyzer,
     channel_summary,
-    compute_gforces,
     corner_analysis,
     detect_braking_zones,
     detect_corners,
+    detect_frozen_stretches,
     detect_full_throttle_zones,
-    frozen_stretches,
-    resample_by_distance,
+    gforces,
+    resample,
 )
 from lapbox.telemetry.lap import FROZEN_CHANNELS
 
@@ -44,18 +44,18 @@ def _freeze(
 
 class TestResampleByDistance:
     def test_shape_and_grid(self, lap_tel_a: pd.DataFrame) -> None:
-        out = resample_by_distance(lap_tel_a, num_points=500)
+        out = resample(lap_tel_a, num_points=500)
         assert len(out) == 500
         assert out["Distance"].is_monotonic_increasing
         assert {"Speed", "Throttle", "Brake"}.issubset(out.columns)
 
     def test_requires_distance(self) -> None:
         with pytest.raises(ValueError):
-            resample_by_distance(pd.DataFrame({"Speed": [1, 2, 3]}))
+            resample(pd.DataFrame({"Speed": [1, 2, 3]}))
 
     def test_needs_two_points(self) -> None:
         with pytest.raises(ValueError):
-            resample_by_distance(pd.DataFrame({"Distance": [0.0], "Speed": [100.0]}))
+            resample(pd.DataFrame({"Distance": [0.0], "Speed": [100.0]}))
 
 
 class TestBrakingZones:
@@ -217,7 +217,7 @@ class TestComputeGForces:
 
     def test_constant_speed_circle_is_pure_lateral(self) -> None:
         radius, speed = 100.0, 30.0  # m, m/s
-        a_long, a_lat = compute_gforces(*self._circle(radius, speed))
+        a_long, a_lat = gforces(*self._circle(radius, speed))
         expected = speed**2 / (radius * 9.81)  # v^2/r in g
         # Interior points avoid gradient edge effects / the unwrap seam.
         assert np.allclose(np.abs(a_lat[5:-5]), expected, rtol=1e-3)
@@ -226,15 +226,15 @@ class TestComputeGForces:
     def test_lateral_g_is_invariant_to_xy_units(self) -> None:
         """Heading-angle method must not care about FastF1's X/Y scaling."""
         distance, speed, x, y = self._circle(100.0, 30.0)
-        _, a_lat = compute_gforces(distance, speed, x, y)
-        _, a_lat_scaled = compute_gforces(distance, speed, x * 10.0, y * 10.0)
+        _, a_lat = gforces(distance, speed, x, y)
+        _, a_lat_scaled = gforces(distance, speed, x * 10.0, y * 10.0)
         assert np.allclose(a_lat, a_lat_scaled)
 
     def test_straight_line_acceleration_is_pure_longitudinal(self) -> None:
         distance = np.linspace(0.0, 500.0, 300)
         # v^2 = 2*a*s with a = 4 m/s^2 -> v = sqrt(8*s); avoids v=0 at the start.
         v_ms = np.sqrt(8.0 * distance + 100.0)
-        a_long, a_lat = compute_gforces(distance, v_ms * 3.6, distance, np.zeros_like(distance))
+        a_long, a_lat = gforces(distance, v_ms * 3.6, distance, np.zeros_like(distance))
         # Away from the boundaries (finite-difference + smoothing edge padding)
         # the constant 4 m/s^2 is recovered exactly.
         assert np.allclose(a_long[20:-5], 4.0 / 9.81, rtol=1e-3)
@@ -253,8 +253,8 @@ class TestComputeGForces:
         noisy_x = x + rng.normal(0.0, sigma, size=len(x))
         noisy_y = y + rng.normal(0.0, sigma, size=len(y))
 
-        _, raw = compute_gforces(distance, speed_kmh, noisy_x, noisy_y, smooth_window=0)
-        _, smoothed = compute_gforces(distance, speed_kmh, noisy_x, noisy_y)
+        _, raw = gforces(distance, speed_kmh, noisy_x, noisy_y, smooth_window=0)
+        _, smoothed = gforces(distance, speed_kmh, noisy_x, noisy_y)
         truth = speed**2 / (radius * 9.81)
 
         # Unsmoothed noise blows well past the real value; smoothing reins it in.
@@ -262,10 +262,10 @@ class TestComputeGForces:
         assert np.abs(smoothed[5:-5]).max() < 3 * truth
 
     def test_degenerate_input_returns_zeros(self) -> None:
-        a_long, a_lat = compute_gforces([0.0, 1.0], [100.0, 100.0], [0.0, 1.0], [0.0, 0.0])
+        a_long, a_lat = gforces([0.0, 1.0], [100.0, 100.0], [0.0, 1.0], [0.0, 0.0])
         assert np.all(a_long == 0) and np.all(a_lat == 0)
         # Mismatched lengths also degrade instead of raising.
-        a_long, a_lat = compute_gforces([0.0, 1.0, 2.0], [100.0], [0.0], [0.0])
+        a_long, a_lat = gforces([0.0, 1.0, 2.0], [100.0], [0.0], [0.0])
         assert len(a_long) == 3 and np.all(a_long == 0)
 
 
@@ -273,11 +273,11 @@ class TestFrozenStretches:
     """Rows 20-31 sit on the straight at 300 km/h, 0.12 s apart."""
 
     def test_a_clean_lap_has_none(self, lap_tel_a: pd.DataFrame) -> None:
-        assert frozen_stretches(_live(lap_tel_a)).empty
+        assert detect_frozen_stretches(_live(lap_tel_a)).empty
 
     def test_a_reading_held_over_a_second_is_flagged(self, lap_tel_a: pd.DataFrame) -> None:
         lap = _live(lap_tel_a)
-        [row] = frozen_stretches(_freeze(lap, 21, 31)).itertuples()
+        [row] = detect_frozen_stretches(_freeze(lap, 21, 31)).itertuples()
         assert (row.start_distance, row.end_distance) == (200.0, 310.0)
         held = (lap["Time"][31] - lap["Time"][20]).total_seconds()
         assert row.seconds == pytest.approx(held)
@@ -289,8 +289,8 @@ class TestFrozenStretches:
         self, lap_tel_a: pd.DataFrame
     ) -> None:
         lap = _live(lap_tel_a)
-        assert frozen_stretches(_freeze(lap, 21, 27)).empty  # 0.8 s, a plausible plateau
-        [row] = frozen_stretches(_freeze(lap, 21, 25, throttle=104.0)).itertuples()  # 0.6 s
+        assert detect_frozen_stretches(_freeze(lap, 21, 27)).empty  # 0.8 s, a plausible plateau
+        [row] = detect_frozen_stretches(_freeze(lap, 21, 25, throttle=104.0)).itertuples()  # 0.6 s
         assert row.sentinel
         assert 0.5 < row.seconds < 1.0
 
@@ -301,20 +301,22 @@ class TestFrozenStretches:
         car = lap.index[(lap.index > 20) & (lap.index <= 44) & (lap["Source"] == "car")]
         held = lap.copy()
         held.loc[car, list(FROZEN_CHANNELS)] = lap.loc[20, list(FROZEN_CHANNELS)].to_numpy()
-        assert len(frozen_stretches(held)) == 1
-        assert frozen_stretches(held.drop(columns="Source")).empty
+        assert len(detect_frozen_stretches(held)) == 1
+        assert detect_frozen_stretches(held.drop(columns="Source")).empty
 
     def test_time_seconds_works_as_the_clock(self, lap_tel_a: pd.DataFrame) -> None:
         lap = _freeze(_live(lap_tel_a), 21, 31)
         seconds = lap.assign(TimeSeconds=lap["Time"].dt.total_seconds()).drop(columns="Time")
-        pd.testing.assert_frame_equal(frozen_stretches(seconds), frozen_stretches(lap))
+        pd.testing.assert_frame_equal(
+            detect_frozen_stretches(seconds), detect_frozen_stretches(lap)
+        )
 
     def test_without_a_clock_or_the_channels_nothing_is_judged(
         self, lap_tel_a: pd.DataFrame
     ) -> None:
         lap = _freeze(_live(lap_tel_a), 21, 31)
         for frame in (lap.drop(columns="Time"), lap.drop(columns="RPM")):
-            out = frozen_stretches(frame)
+            out = detect_frozen_stretches(frame)
             assert out.empty
             assert list(out.columns) == [
                 "start_distance",
@@ -339,11 +341,11 @@ class TestRawFastF1Telemetry:
         assert raw.summary == pytest.approx(plain.summary)
 
     def test_resample_skips_non_numeric_columns(self, fastf1_tel_a: pd.DataFrame) -> None:
-        out = resample_by_distance(fastf1_tel_a, num_points=200)
+        out = resample(fastf1_tel_a, num_points=200)
         assert list(out.columns) == ["Distance", *ANALYSIS_CHANNELS]
 
     def test_input_is_not_modified(self, fastf1_tel_a: pd.DataFrame) -> None:
         before = fastf1_tel_a.copy()
         TelemetryAnalyzer().analyze(fastf1_tel_a)
-        resample_by_distance(fastf1_tel_a)
+        resample(fastf1_tel_a)
         pd.testing.assert_frame_equal(fastf1_tel_a, before)

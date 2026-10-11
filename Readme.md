@@ -8,7 +8,7 @@
 [FastF1](https://docs.fastf1.dev/). It is the analysis engine behind
 [LapBox](https://lapbox.in), extracted so anyone can use it on FastF1 data.
 
-> **Status: early development release (`0.1.0.dev8`).** In the library so far:
+> **Status: early development release (`0.1.0.dev9`).** In the library so far:
 > `lapbox.telemetry` (one lap, two laps matched by track position), `lapbox.data` (laps,
 > pit stops, stints, gaps), `lapbox.practice` (long runs), `lapbox.pace` (lap cleaning,
 > fuel-corrected race pace, clean air vs traffic, consistency, ideal lap) and `lapbox.tyres`
@@ -20,7 +20,7 @@
 Until the first PyPI release, install from the tagged source:
 
 ```bash
-pip install "lapbox @ https://github.com/racemind-ai/lapbox-sdk/archive/refs/tags/v0.1.0.dev8.tar.gz"
+pip install "lapbox @ https://github.com/racemind-ai/lapbox-sdk/archive/refs/tags/v0.1.0.dev9.tar.gz"
 ```
 
 Python 3.11+. Depends on FastF1, pandas, NumPy and SciPy.
@@ -31,17 +31,17 @@ Every function takes FastF1 telemetry exactly as `lap.get_telemetry()` returns i
 
 ```python
 import fastf1
-from lapbox.telemetry import compare_drivers, cumulative_time_delta
+from lapbox.telemetry import compare, delta_time
 
 session = fastf1.get_session(2025, "Silverstone", "Q")
 session.load()
 ver = session.laps.pick_drivers("VER").pick_fastest().get_telemetry()
 nor = session.laps.pick_drivers("NOR").pick_fastest().get_telemetry()
 
-result = compare_drivers(ver, nor, driver_a="VER", driver_b="NOR")
+result = compare(ver, nor, driver_a="VER", driver_b="NOR")
 if result.matched:
     print(result.summary)
-    print(f"{cumulative_time_delta(result.aligned).iloc[-1]:+.3f} s")
+    print(f"{delta_time(result.aligned).iloc[-1]:+.3f} s")
     gain = result.segments.loc[result.segments["time_delta"].idxmax()]
     print(f"VER gains most from {gain.start_distance:.0f} to {gain.end_distance:.0f} m: {gain.time_delta:+.3f} s")
 else:
@@ -170,11 +170,11 @@ equal distances lines one car's corner up against the other's straight. Over a s
 of LapBox comparisons, 14 % of driver pairs compared that way gave corner speeds more
 than 40 km/h apart — up to 181 km/h, which is impossible between two F1 cars.
 
-So `align_by_distance` puts lap B onto lap A's basis first: it stretches B to A's lap
+So `align` puts lap B onto lap A's basis first: it stretches B to A's lap
 length, then slides it by the offset that best lines up the two speed traces.
 
 Some laps still can't be matched: a telemetry dropout stretches one part of a lap, and
-no global shift can undo that. `compare_drivers` reports how far apart the two speed
+no global shift can undo that. `compare` reports how far apart the two speed
 traces still are after alignment (`result.residual`, km/h RMS), and `result.matched` is
 `False` above 15 km/h. That threshold was measured on 250 driver pairs: it caught 32 of
 33 physically impossible pairs and withheld 8 of 217 sound ones. When `matched` is
@@ -184,7 +184,8 @@ whether a lap's car data froze in the timing feed, and where (see Limits): on 20
 qualifying that was behind every refusal measured.
 
 FastF1's own `utils.delta_time` is deprecated and documented as *"not actually very
-accurate"*.
+accurate"*. lapbox's `delta_time` takes its name on purpose: it compares the laps on
+the same piece of track and ends exactly at the official lap-time gap.
 
 ## Limits
 
@@ -217,7 +218,7 @@ accurate"*.
   speed, RPM, gear and throttle all unchanged, often with a throttle of 104 — for one to 25
   seconds while the car's position moves on. `Distance` is integrated from that speed, so the
   lap is misplaced (the five worst laps came out 380 m short to 85 m long), and it can't be
-  matched with another. `frozen_stretches(tel)` finds these stretches. On 2026 China, Suzuka
+  matched with another. `detect_frozen_stretches(tel)` finds these stretches. On 2026 China, Suzuka
   and Monza qualifying it was behind all 57 refused driver pairs (14, 16 and 5 of 22 fastest
   laps had one); on 183 laps from 2023, 2025 and three other 2026 sessions it flagged none.
   Rebuilding the speed from the positions was tried and isn't reliable yet: about 50 ms off
@@ -256,21 +257,21 @@ accurate"*.
 
 | One lap | |
 |---|---|
-| `resample_by_distance(tel)` | Channels on a uniform distance grid |
+| `resample(tel)` | Channels on a uniform distance grid |
 | `detect_corners(tel)` | Apexes found by the size of each speed drop, so fast corners count too |
 | `corner_analysis(distance, speed, apexes)` | Entry, minimum and exit speed per corner, classed slow / medium / fast |
 | `detect_braking_zones(tel)`, `detect_full_throttle_zones(tel)` | Zone tables |
-| `compute_gforces(distance, speed, x, y)` | Longitudinal and lateral g from speed and the racing line |
+| `gforces(distance, speed, x, y)` | Longitudinal and lateral g from speed and the racing line |
 | `channel_summary(tel)` | Top speed, full-throttle %, braking %, … |
-| `frozen_stretches(tel)` | Where the timing feed's car data froze (one reading repeated), which misplaces the lap |
+| `detect_frozen_stretches(tel)` | Where the timing feed's car data froze (one reading repeated), which misplaces the lap |
 | `TelemetryAnalyzer().analyze(tel)` | All of the above for one lap |
 
 | Two laps | |
 |---|---|
-| `compare_drivers(tel_a, tel_b, ...)` | Alignment, minisectors, segments, summary, `residual` and `matched` in one call |
-| `align_by_distance(tel_a, tel_b)` | Both laps matched by track position |
+| `compare(tel_a, tel_b, ...)` | Alignment, minisectors, segments, summary, `residual` and `matched` in one call |
+| `align(tel_a, tel_b)` | Both laps matched by track position |
 | `alignment_residual(aligned)`, `MAX_ALIGNMENT_RESIDUAL` | How well they matched, and the cut-off |
-| `cumulative_time_delta(aligned)` | Time gap along the lap (positive: A ahead), from the laps' own clocks when they have them |
+| `delta_time(aligned)` | Time gap along the lap (positive: A ahead), from the laps' own clocks when they have them |
 | `channel_delta(aligned, channel)` | Speed / throttle / brake difference |
 | `corner_speeds(aligned, apexes)` | Both drivers' minimum speed at the same corners |
 | `minisector_dominance(tel_a, tel_b, ...)` | Who took less time through each minisector (with both times and mean speeds) |

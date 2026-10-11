@@ -8,18 +8,18 @@ import pytest
 
 from lapbox.telemetry import (
     MAX_ALIGNMENT_RESIDUAL,
-    ComparisonResult,
-    align_by_distance,
+    Comparison,
+    align,
     alignment_residual,
     channel_delta,
-    compare_drivers,
+    compare,
     corner_speeds,
-    cumulative_time_delta,
-    frozen_stretches,
+    delta_time,
+    detect_frozen_stretches,
     minisector_dominance,
     segment_gaps,
 )
-from lapbox.telemetry.compare import _best_circular_shift
+from lapbox.telemetry.comparison import _best_circular_shift
 
 pytestmark = pytest.mark.unit
 
@@ -68,7 +68,7 @@ def _misplaced_corner_lap() -> pd.DataFrame:
 
 class TestAlignByDistance:
     def test_shared_grid(self, lap_tel_a: pd.DataFrame, lap_tel_b: pd.DataFrame) -> None:
-        aligned = align_by_distance(lap_tel_a, lap_tel_b, num_points=400)
+        aligned = align(lap_tel_a, lap_tel_b, num_points=400)
         assert len(aligned) == 400
         assert {"Distance", "Speed_a", "Speed_b"}.issubset(aligned.columns)
         assert aligned["Distance"].is_monotonic_increasing
@@ -84,7 +84,7 @@ class TestAlignByDistance:
         a = _two_corner_lap()
         b = _two_corner_lap(shift=25)
 
-        aligned = align_by_distance(a, b, num_points=600, channels=("Speed",))
+        aligned = align(a, b, num_points=600, channels=("Speed",))
         assert alignment_residual(aligned) < 5.0
 
     def test_offset_beyond_the_search_bound_is_reported_not_guessed(self) -> None:
@@ -96,7 +96,7 @@ class TestAlignByDistance:
         a = _two_corner_lap()
         b = _two_corner_lap(shift=120)  # 20 % of the lap
 
-        aligned = align_by_distance(a, b, num_points=600, channels=("Speed",))
+        aligned = align(a, b, num_points=600, channels=("Speed",))
         assert alignment_residual(aligned) > MAX_ALIGNMENT_RESIDUAL
 
     def test_matches_a_lap_whose_distance_axis_drifted(self) -> None:
@@ -104,12 +104,12 @@ class TestAlignByDistance:
         a = _two_corner_lap()
         b = _two_corner_lap(scale=1.03)
 
-        aligned = align_by_distance(a, b, num_points=600, channels=("Speed",))
+        aligned = align(a, b, num_points=600, channels=("Speed",))
         assert alignment_residual(aligned) < 5.0
 
     def test_identical_laps_are_left_alone(self) -> None:
         a = _two_corner_lap()
-        aligned = align_by_distance(a, a.copy(), num_points=600, channels=("Speed",))
+        aligned = align(a, a.copy(), num_points=600, channels=("Speed",))
         assert alignment_residual(aligned) == pytest.approx(0.0, abs=1e-6)
 
     def test_real_speed_difference_survives_alignment(self) -> None:
@@ -118,7 +118,7 @@ class TestAlignByDistance:
         b = _two_corner_lap()
         b["Speed"] = b["Speed"] * 0.9  # B genuinely 10 % slower everywhere
 
-        aligned = align_by_distance(a, b, num_points=600, channels=("Speed",))
+        aligned = align(a, b, num_points=600, channels=("Speed",))
         assert (aligned["Speed_a"] > aligned["Speed_b"]).mean() > 0.95
 
     def test_a_fraction_of_a_sample_is_recovered(self) -> None:
@@ -136,23 +136,21 @@ class TestAlignByDistance:
     def test_the_match_does_not_depend_on_the_grid(self, num_points: int) -> None:
         # 125 m round the circuit: 12.5 samples of a 300-point grid, which a shift
         # by whole samples cannot reach.
-        aligned = align_by_distance(
+        aligned = align(
             _two_corner_lap(), _two_corner_lap(shift=25), num_points=num_points, channels=("Speed",)
         )
         assert alignment_residual(aligned) < 1.0
 
     def test_laps_with_timing_get_their_clocks(self) -> None:
-        aligned = align_by_distance(_with_clock(_two_corner_lap()), _with_clock(_two_corner_lap()))
+        aligned = align(_with_clock(_two_corner_lap()), _with_clock(_two_corner_lap()))
         assert {"Time_a", "Time_b"} <= set(aligned.columns)
         assert aligned["Time_a"].iloc[0] == pytest.approx(0.0)
         assert aligned["Time_b"].to_numpy() == pytest.approx(aligned["Time_a"].to_numpy())
 
     def test_time_and_time_seconds_read_the_same(self) -> None:
         a, b = _two_corner_lap(), _two_corner_lap(scale=1.01)
-        seconds = align_by_distance(_with_clock(a), _with_clock(b))
-        timedelta = align_by_distance(
-            _with_clock(a, timedelta=True), _with_clock(b, timedelta=True)
-        )
+        seconds = align(_with_clock(a), _with_clock(b))
+        timedelta = align(_with_clock(a, timedelta=True), _with_clock(b, timedelta=True))
         pd.testing.assert_frame_equal(seconds, timedelta)
 
 
@@ -162,7 +160,7 @@ class TestAlignmentResidual:
         a = _two_corner_lap()
         b = _misplaced_corner_lap()
 
-        aligned = align_by_distance(a, b, num_points=600, channels=("Speed",))
+        aligned = align(a, b, num_points=600, channels=("Speed",))
         assert alignment_residual(aligned) > MAX_ALIGNMENT_RESIDUAL
 
     def test_missing_speed_is_infinite(self) -> None:
@@ -174,13 +172,13 @@ class TestChannelDelta:
     def test_delta_positive_when_a_faster(
         self, lap_tel_a: pd.DataFrame, lap_tel_b: pd.DataFrame
     ) -> None:
-        aligned = align_by_distance(lap_tel_a, lap_tel_b)
+        aligned = align(lap_tel_a, lap_tel_b)
         delta = channel_delta(aligned, "Speed")
         # A (scale 1.0) is faster than B (0.98) almost everywhere.
         assert delta.mean() > 0
 
     def test_missing_channel_raises(self, lap_tel_a: pd.DataFrame, lap_tel_b: pd.DataFrame) -> None:
-        aligned = align_by_distance(lap_tel_a, lap_tel_b)
+        aligned = align(lap_tel_a, lap_tel_b)
         with pytest.raises(KeyError):
             channel_delta(aligned, "Nonexistent")
 
@@ -189,8 +187,8 @@ class TestCumulativeTimeDelta:
     def test_faster_driver_gains_time(
         self, lap_tel_a: pd.DataFrame, lap_tel_b: pd.DataFrame
     ) -> None:
-        aligned = align_by_distance(lap_tel_a, lap_tel_b)
-        delta = cumulative_time_delta(aligned)
+        aligned = align(lap_tel_a, lap_tel_b)
+        delta = delta_time(aligned)
         assert delta.iloc[0] == pytest.approx(0.0)
         # A (scale 1.0) is quicker than B (0.98) everywhere, so the gap grows
         # in A's favour for the whole lap.
@@ -199,7 +197,7 @@ class TestCumulativeTimeDelta:
 
     def test_missing_speed_raises(self) -> None:
         with pytest.raises(KeyError):
-            cumulative_time_delta(pd.DataFrame({"Distance": [0.0, 1.0]}))
+            delta_time(pd.DataFrame({"Distance": [0.0, 1.0]}))
 
     @pytest.mark.parametrize("num_points", [500, 2000])
     def test_with_clocks_it_ends_at_the_lap_time_gap(self, num_points: int) -> None:
@@ -210,7 +208,7 @@ class TestCumulativeTimeDelta:
         b = _with_clock(slower.assign(Speed=slower["Speed"] * 0.97))
         lap_a, lap_b = a["TimeSeconds"].iloc[-1], b["TimeSeconds"].iloc[-1]
 
-        delta = cumulative_time_delta(align_by_distance(a, b, num_points=num_points))
+        delta = delta_time(align(a, b, num_points=num_points))
         assert delta.iloc[0] == 0.0
         assert delta.iloc[-1] == pytest.approx(lap_b - lap_a, abs=1e-9)
         assert delta.is_monotonic_increasing  # B loses time all the way round
@@ -218,7 +216,7 @@ class TestCumulativeTimeDelta:
 
 class TestCornerSpeeds:
     def test_min_speed_per_corner(self, lap_tel_a: pd.DataFrame, lap_tel_b: pd.DataFrame) -> None:
-        aligned = align_by_distance(lap_tel_a, lap_tel_b)
+        aligned = align(lap_tel_a, lap_tel_b)
         cs = corner_speeds(aligned, [1000.0, 2000.0])
         assert list(cs["corner"]) == [1, 2]
         assert list(cs["distance"]) == [1000.0, 2000.0]
@@ -229,7 +227,7 @@ class TestCornerSpeeds:
     def test_apex_outside_grid_is_skipped(
         self, lap_tel_a: pd.DataFrame, lap_tel_b: pd.DataFrame
     ) -> None:
-        aligned = align_by_distance(lap_tel_a, lap_tel_b)
+        aligned = align(lap_tel_a, lap_tel_b)
         cs = corner_speeds(aligned, [99_999.0])
         assert cs.empty
 
@@ -285,7 +283,7 @@ class TestMinisectorDominance:
 
 class TestSegmentGaps:
     def test_segments_end_at_the_speed_peaks(self) -> None:
-        aligned = align_by_distance(_two_corner_lap(), _two_corner_lap(scale=0.98))
+        aligned = align(_two_corner_lap(), _two_corner_lap(scale=0.98))
         seg = segment_gaps(aligned)
         distance = aligned["Distance"]
         assert list(seg["segment"]) == [1, 2]
@@ -298,18 +296,16 @@ class TestSegmentGaps:
         a = _with_clock(_two_corner_lap())
         slower = _two_corner_lap(shift=25)
         b = _with_clock(slower.assign(Speed=slower["Speed"] * 0.97))
-        aligned = align_by_distance(a, b, num_points=500)
+        aligned = align(a, b, num_points=500)
         seg = segment_gaps(aligned)
-        gap = cumulative_time_delta(aligned).iloc[-1]
+        gap = delta_time(aligned).iloc[-1]
         assert seg["time_delta"].sum() == pytest.approx(gap, abs=1e-9)
         assert seg["time_a"].sum() == pytest.approx(a["TimeSeconds"].iloc[-1], abs=1e-9)
         assert seg["time_b"].sum() == pytest.approx(b["TimeSeconds"].iloc[-1], abs=1e-9)
         assert (seg["time_delta"] > 0).all()  # B is slower everywhere
 
     def test_swapping_the_drivers_keeps_the_segments(self) -> None:
-        aligned = align_by_distance(
-            _with_clock(_two_corner_lap()), _with_clock(_two_corner_lap(scale=0.98))
-        )
+        aligned = align(_with_clock(_two_corner_lap()), _with_clock(_two_corner_lap(scale=0.98)))
         swapped = aligned.rename(
             columns={
                 "Speed_a": "Speed_b",
@@ -332,14 +328,14 @@ class TestSegmentGaps:
         distance = a["Distance"].to_numpy(dtype=float)
         apex = distance[np.argmin(a["Speed"].to_numpy())]
         b = a.assign(Distance=distance + 5.0 * np.clip(1 - np.abs(distance - apex) / 150, 0, 1))
-        aligned = align_by_distance(a, b, num_points=500)
-        curve = cumulative_time_delta(aligned)
+        aligned = align(a, b, num_points=500)
+        curve = delta_time(aligned)
         around = (aligned["Distance"] - apex).abs() < 300
         assert curve[around].max() - curve[around].min() > 0.05
         assert segment_gaps(aligned)["time_delta"].abs().max() < 0.001
 
     def test_a_lap_without_peaks_is_one_segment(self) -> None:
-        aligned = align_by_distance(_lap(np.full(200, 250.0)), _lap(np.full(200, 240.0)))
+        aligned = align(_lap(np.full(200, 250.0)), _lap(np.full(200, 240.0)))
         [row] = segment_gaps(aligned).itertuples()
         assert (row.start_distance, row.end_distance) == (0.0, aligned["Distance"].iloc[-1])
         assert row.time_delta > 0
@@ -351,7 +347,7 @@ class TestSegmentGaps:
 
 class TestCompareDrivers:
     def test_summary(self, lap_tel_a: pd.DataFrame, lap_tel_b: pd.DataFrame) -> None:
-        result = compare_drivers(lap_tel_a, lap_tel_b, driver_a="VER", driver_b="HAM")
+        result = compare(lap_tel_a, lap_tel_b, driver_a="VER", driver_b="HAM")
         assert result.summary["more_minisectors"] == "VER"
         assert "dominant_driver" not in result.summary  # a count, not a verdict: renamed
         assert result.summary["minisectors_a"] >= result.summary["minisectors_b"]
@@ -362,10 +358,8 @@ class TestCompareDrivers:
         self, lap_tel_a: pd.DataFrame, lap_tel_b: pd.DataFrame
     ) -> None:
         # A coarse grid for the charts must not make the minisectors coarser.
-        fine = compare_drivers(lap_tel_a, lap_tel_b, driver_a="VER", driver_b="HAM")
-        coarse = compare_drivers(
-            lap_tel_a, lap_tel_b, driver_a="VER", driver_b="HAM", num_points=400
-        )
+        fine = compare(lap_tel_a, lap_tel_b, driver_a="VER", driver_b="HAM")
+        coarse = compare(lap_tel_a, lap_tel_b, driver_a="VER", driver_b="HAM", num_points=400)
         assert len(coarse.aligned) == 400
         pd.testing.assert_frame_equal(coarse.minisectors, fine.minisectors)
 
@@ -373,16 +367,14 @@ class TestCompareDrivers:
         self, lap_tel_a: pd.DataFrame, lap_tel_b: pd.DataFrame
     ) -> None:
         ms = minisector_dominance(lap_tel_a, lap_tel_b, driver_a="VER", driver_b="HAM")
-        own_grid = align_by_distance(lap_tel_a, lap_tel_b, num_points=4000, channels=("Speed",))
-        gap = cumulative_time_delta(own_grid).iloc[-1]
+        own_grid = align(lap_tel_a, lap_tel_b, num_points=4000, channels=("Speed",))
+        gap = delta_time(own_grid).iloc[-1]
         assert (ms["time_b"] - ms["time_a"]).sum() == pytest.approx(gap, abs=1e-9)
 
     def test_segments_are_on_the_aligned_grid(
         self, lap_tel_a: pd.DataFrame, lap_tel_b: pd.DataFrame
     ) -> None:
-        result = compare_drivers(
-            lap_tel_a, lap_tel_b, driver_a="VER", driver_b="HAM", num_points=400
-        )
+        result = compare(lap_tel_a, lap_tel_b, driver_a="VER", driver_b="HAM", num_points=400)
         pd.testing.assert_frame_equal(result.segments, segment_gaps(result.aligned))
 
 
@@ -390,15 +382,13 @@ class TestComparisonMatched:
     """Whether two laps can be compared is decided here, not by each caller."""
 
     def test_sound_pair_is_matched(self, lap_tel_a: pd.DataFrame, lap_tel_b: pd.DataFrame) -> None:
-        result = compare_drivers(lap_tel_a, lap_tel_b, driver_a="VER", driver_b="HAM")
+        result = compare(lap_tel_a, lap_tel_b, driver_a="VER", driver_b="HAM")
         assert result.residual == pytest.approx(alignment_residual(result.aligned))
         assert result.residual < MAX_ALIGNMENT_RESIDUAL
         assert result.matched
 
     def test_dropout_pair_is_not_matched(self) -> None:
-        result = compare_drivers(
-            _two_corner_lap(), _misplaced_corner_lap(), driver_a="VER", driver_b="HAM"
-        )
+        result = compare(_two_corner_lap(), _misplaced_corner_lap(), driver_a="VER", driver_b="HAM")
         assert result.residual > MAX_ALIGNMENT_RESIDUAL
         assert not result.matched
 
@@ -413,7 +403,7 @@ class TestComparisonMatched:
     )
     def test_threshold(self, residual: float, matched: bool) -> None:
         empty = pd.DataFrame()
-        result = ComparisonResult("VER", "HAM", empty, empty, {}, residual=residual)
+        result = Comparison("VER", "HAM", empty, empty, {}, residual=residual)
         assert result.matched is matched
 
 
@@ -427,8 +417,8 @@ class TestRawFastF1Telemetry:
         lap_tel_a: pd.DataFrame,
         lap_tel_b: pd.DataFrame,
     ) -> None:
-        raw = compare_drivers(fastf1_tel_a, fastf1_tel_b, driver_a="VER", driver_b="HAM")
-        plain = compare_drivers(lap_tel_a, lap_tel_b, driver_a="VER", driver_b="HAM")
+        raw = compare(fastf1_tel_a, fastf1_tel_b, driver_a="VER", driver_b="HAM")
+        plain = compare(lap_tel_a, lap_tel_b, driver_a="VER", driver_b="HAM")
         # FastF1's own clock comes through; the plain frames have none.
         assert {"Time_a", "Time_b"} <= set(raw.aligned.columns)
         assert not {"Time_a", "Time_b"} & set(plain.aligned.columns)
@@ -445,9 +435,9 @@ class TestRawFastF1Telemetry:
     def test_each_laps_frozen_stretches_come_along(
         self, fastf1_tel_a: pd.DataFrame, fastf1_tel_b: pd.DataFrame
     ) -> None:
-        result = compare_drivers(fastf1_tel_a, fastf1_tel_b, driver_a="VER", driver_b="HAM")
-        pd.testing.assert_frame_equal(result.frozen_a, frozen_stretches(fastf1_tel_a))
-        pd.testing.assert_frame_equal(result.frozen_b, frozen_stretches(fastf1_tel_b))
+        result = compare(fastf1_tel_a, fastf1_tel_b, driver_a="VER", driver_b="HAM")
+        pd.testing.assert_frame_equal(result.frozen_a, detect_frozen_stretches(fastf1_tel_a))
+        pd.testing.assert_frame_equal(result.frozen_b, detect_frozen_stretches(fastf1_tel_b))
         # The synthetic lap holds exactly 300 km/h on its straights, as no car does.
         assert not result.frozen_a.empty
 
@@ -455,6 +445,6 @@ class TestRawFastF1Telemetry:
         self, fastf1_tel_a: pd.DataFrame, fastf1_tel_b: pd.DataFrame
     ) -> None:
         before_a, before_b = fastf1_tel_a.copy(), fastf1_tel_b.copy()
-        compare_drivers(fastf1_tel_a, fastf1_tel_b, driver_a="VER", driver_b="HAM")
+        compare(fastf1_tel_a, fastf1_tel_b, driver_a="VER", driver_b="HAM")
         pd.testing.assert_frame_equal(fastf1_tel_a, before_a)
         pd.testing.assert_frame_equal(fastf1_tel_b, before_b)

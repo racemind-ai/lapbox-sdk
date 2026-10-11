@@ -3,15 +3,15 @@
 Every function takes FastF1 telemetry as it comes from ``lap.get_telemetry()``.
 """
 
-from lapbox.telemetry.compare import (
+from lapbox.telemetry.comparison import (
     MAX_ALIGNMENT_RESIDUAL,
-    ComparisonResult,
-    align_by_distance,
+    Comparison,
+    align,
     alignment_residual,
     channel_delta,
-    compare_drivers,
+    compare,
     corner_speeds,
-    cumulative_time_delta,
+    delta_time,
     minisector_dominance,
     segment_gaps,
 )
@@ -21,13 +21,13 @@ from lapbox.telemetry.lap import (
     TelemetryAnalyzer,
     Zone,
     channel_summary,
-    compute_gforces,
     corner_analysis,
     detect_braking_zones,
     detect_corners,
+    detect_frozen_stretches,
     detect_full_throttle_zones,
-    frozen_stretches,
-    resample_by_distance,
+    gforces,
+    resample,
 )
 
 __all__ = [
@@ -36,22 +36,22 @@ __all__ = [
     "Zone",
     "LapAnalysis",
     "TelemetryAnalyzer",
-    "resample_by_distance",
+    "resample",
     "detect_braking_zones",
     "detect_full_throttle_zones",
     "detect_corners",
     "corner_analysis",
-    "compute_gforces",
+    "gforces",
     "channel_summary",
-    "frozen_stretches",
+    "detect_frozen_stretches",
     # Two laps
     "MAX_ALIGNMENT_RESIDUAL",
-    "ComparisonResult",
-    "compare_drivers",
-    "align_by_distance",
+    "Comparison",
+    "compare",
+    "align",
     "alignment_residual",
     "channel_delta",
-    "cumulative_time_delta",
+    "delta_time",
     "corner_speeds",
     "minisector_dominance",
     "segment_gaps",

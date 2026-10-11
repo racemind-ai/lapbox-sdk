@@ -4,7 +4,7 @@ Pure, side-effect-free analysis over one lap's car telemetry, as FastF1 returns 
 from ``lap.get_telemetry()``: FastF1's own column names (``Distance``, ``Speed``,
 ``Throttle``, ``Brake``, ``nGear``, ``RPM``, ``DRS``, ``X``, ``Y``), extra columns
 ignored. Everything here operates on and returns plain ``pandas``/``numpy``
-objects, and :mod:`lapbox.telemetry.compare` builds on it.
+objects, and :mod:`lapbox.telemetry.comparison` builds on it.
 
 Capabilities:
 
@@ -71,7 +71,7 @@ def _seconds(tel: pd.DataFrame) -> pd.Series | None:
     return None
 
 
-def resample_by_distance(
+def resample(
     tel: pd.DataFrame,
     num_points: int = 1000,
     channels: tuple[str, ...] | None = None,
@@ -216,8 +216,9 @@ def detect_corners(
 
     Args:
         tel: Telemetry with ``Distance`` and ``Speed``.
-        prominence: Minimum speed drop (km/h) into a minimum from the higher of
-            its two surrounding ridges. Filters out ripples along a straight.
+        prominence: Minimum speed drop (km/h) into a minimum from the lower of
+            its two surrounding ridges (a dip to 150 km/h between 300 and 240 km/h
+            ridges scores 90). Filters out ripples along a straight.
         min_separation: Minimum spacing between apexes (metres); the slower
             minimum wins inside that window.
 
@@ -262,7 +263,7 @@ def _smooth(values: np.ndarray, window: int) -> np.ndarray:
     return np.convolve(padded, np.ones(window) / window, mode="valid")
 
 
-def compute_gforces(
+def gforces(
     distance: np.ndarray | list[float],
     speed_kmh: np.ndarray | list[float],
     x: np.ndarray | list[float],
@@ -368,7 +369,7 @@ def channel_summary(tel: pd.DataFrame) -> dict[str, float]:
     return summary
 
 
-def frozen_stretches(
+def detect_frozen_stretches(
     tel: pd.DataFrame, *, min_seconds: float = 1.0, sentinel_seconds: float = 0.5
 ) -> pd.DataFrame:
     """Return the stretches of a lap where the timing feed's car data froze.
@@ -381,7 +382,7 @@ def frozen_stretches(
     short and 85 m long against the session's typical lap. A stretch counts when the
     four channels repeat exactly for ``min_seconds``, or for ``sentinel_seconds``
     with a throttle above 100. On 2026 China, Suzuka and Monza qualifying every
-    one of the 57 driver pairs :func:`~lapbox.telemetry.compare.compare_drivers`
+    one of the 57 driver pairs :func:`~lapbox.telemetry.comparison.compare`
     refused had a lap with such a stretch, and no other pair was refused; on 183
     laps from sessions with no refusals (2023, 2025, 2026 Monaco, Miami and
     Madrid) nothing was flagged.
