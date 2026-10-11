@@ -26,6 +26,7 @@ from lapbox.telemetry.lap import (
     detect_braking_zones,
     detect_corners,
     detect_full_throttle_zones,
+    frozen_stretches,
     resample_by_distance,
 )
 
@@ -42,6 +43,7 @@ __all__ = [
     "corner_analysis",
     "compute_gforces",
     "channel_summary",
+    "frozen_stretches",
     # Two laps
     "MAX_ALIGNMENT_RESIDUAL",
     "ComparisonResult",

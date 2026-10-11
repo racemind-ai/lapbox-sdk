@@ -15,10 +15,31 @@ from lapbox.telemetry import (
     detect_braking_zones,
     detect_corners,
     detect_full_throttle_zones,
+    frozen_stretches,
     resample_by_distance,
 )
+from lapbox.telemetry.lap import FROZEN_CHANNELS
 
 pytestmark = pytest.mark.unit
+
+
+def _live(lap: pd.DataFrame) -> pd.DataFrame:
+    """``lap`` as a car really drives it, no two readings exactly alike, with its clock."""
+    speed = lap["Speed"].to_numpy() + 0.4 * np.sin(np.arange(len(lap)) * 1.3)
+    seconds = np.r_[0.0, np.cumsum(np.diff(lap["Distance"].to_numpy()) / (speed[1:] / 3.6))]
+    return lap.assign(Speed=speed, RPM=speed * 45.0, Time=pd.to_timedelta(seconds, unit="s"))
+
+
+def _freeze(
+    lap: pd.DataFrame, first: int, last: int, *, throttle: float | None = None
+) -> pd.DataFrame:
+    """Rows ``first`` to ``last`` repeat the reading before them, as a stalled feed does."""
+    out = lap.copy()
+    if throttle is not None:
+        out.loc[first - 1 : last, "Throttle"] = throttle
+    for channel in FROZEN_CHANNELS:
+        out.loc[first:last, channel] = out.loc[first - 1, channel]
+    return out
 
 
 class TestResampleByDistance:
@@ -246,6 +267,62 @@ class TestComputeGForces:
         # Mismatched lengths also degrade instead of raising.
         a_long, a_lat = compute_gforces([0.0, 1.0, 2.0], [100.0], [0.0], [0.0])
         assert len(a_long) == 3 and np.all(a_long == 0)
+
+
+class TestFrozenStretches:
+    """Rows 20-31 sit on the straight at 300 km/h, 0.12 s apart."""
+
+    def test_a_clean_lap_has_none(self, lap_tel_a: pd.DataFrame) -> None:
+        assert frozen_stretches(_live(lap_tel_a)).empty
+
+    def test_a_reading_held_over_a_second_is_flagged(self, lap_tel_a: pd.DataFrame) -> None:
+        lap = _live(lap_tel_a)
+        [row] = frozen_stretches(_freeze(lap, 21, 31)).itertuples()
+        assert (row.start_distance, row.end_distance) == (200.0, 310.0)
+        held = (lap["Time"][31] - lap["Time"][20]).total_seconds()
+        assert row.seconds == pytest.approx(held)
+        assert row.seconds > 1.0
+        assert row.speed == lap["Speed"][20]
+        assert not row.sentinel
+
+    def test_a_shorter_hold_counts_only_with_the_impossible_throttle(
+        self, lap_tel_a: pd.DataFrame
+    ) -> None:
+        lap = _live(lap_tel_a)
+        assert frozen_stretches(_freeze(lap, 21, 27)).empty  # 0.8 s, a plausible plateau
+        [row] = frozen_stretches(_freeze(lap, 21, 25, throttle=104.0)).itertuples()  # 0.6 s
+        assert row.sentinel
+        assert 0.5 < row.seconds < 1.0
+
+    def test_only_car_samples_are_compared(self, lap_tel_a: pd.DataFrame) -> None:
+        # FastF1 interleaves position rows whose car channels are interpolated: in
+        # a freeze those come out the same, but here only the car rows are held.
+        lap = _live(lap_tel_a).assign(Source=np.where(np.arange(len(lap_tel_a)) % 2, "pos", "car"))
+        car = lap.index[(lap.index > 20) & (lap.index <= 44) & (lap["Source"] == "car")]
+        held = lap.copy()
+        held.loc[car, list(FROZEN_CHANNELS)] = lap.loc[20, list(FROZEN_CHANNELS)].to_numpy()
+        assert len(frozen_stretches(held)) == 1
+        assert frozen_stretches(held.drop(columns="Source")).empty
+
+    def test_time_seconds_works_as_the_clock(self, lap_tel_a: pd.DataFrame) -> None:
+        lap = _freeze(_live(lap_tel_a), 21, 31)
+        seconds = lap.assign(TimeSeconds=lap["Time"].dt.total_seconds()).drop(columns="Time")
+        pd.testing.assert_frame_equal(frozen_stretches(seconds), frozen_stretches(lap))
+
+    def test_without_a_clock_or_the_channels_nothing_is_judged(
+        self, lap_tel_a: pd.DataFrame
+    ) -> None:
+        lap = _freeze(_live(lap_tel_a), 21, 31)
+        for frame in (lap.drop(columns="Time"), lap.drop(columns="RPM")):
+            out = frozen_stretches(frame)
+            assert out.empty
+            assert list(out.columns) == [
+                "start_distance",
+                "end_distance",
+                "seconds",
+                "speed",
+                "sentinel",
+            ]
 
 
 class TestRawFastF1Telemetry:

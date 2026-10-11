@@ -14,6 +14,7 @@ Capabilities:
 * Full-throttle (WOT) section detection.
 * Corner (apex) detection from prominent speed minima.
 * Per-channel summary statistics.
+* Stretches where the car data froze in the timing feed.
 """
 
 from __future__ import annotations
@@ -29,6 +30,9 @@ logger = logging.getLogger(__name__)
 
 # Canonical analysis channels, all numeric and interpolatable over distance.
 ANALYSIS_CHANNELS: tuple[str, ...] = ("Speed", "Throttle", "Brake", "RPM", "nGear", "DRS")
+
+# The car channels that repeat together when the timing feed's car data freezes.
+FROZEN_CHANNELS: tuple[str, ...] = ("Speed", "RPM", "nGear", "Throttle")
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,6 +60,15 @@ def _monotonic_distance(tel: pd.DataFrame) -> pd.DataFrame:
     _require_distance(tel)
     ordered = tel.sort_values("Distance")
     return ordered[~ordered["Distance"].duplicated(keep="first")].reset_index(drop=True)
+
+
+def _seconds(tel: pd.DataFrame) -> pd.Series | None:
+    """The lap's clock in seconds: ``TimeSeconds``, else FastF1's ``Time``; ``None`` without one."""
+    if "TimeSeconds" in tel.columns:
+        return pd.to_numeric(tel["TimeSeconds"], errors="coerce")
+    if "Time" in tel.columns and pd.api.types.is_timedelta64_dtype(tel["Time"]):
+        return tel["Time"].dt.total_seconds()
+    return None
 
 
 def resample_by_distance(
@@ -353,6 +366,65 @@ def channel_summary(tel: pd.DataFrame) -> dict[str, float]:
     if "nGear" in tel.columns:
         summary["max_gear"] = float(tel["nGear"].max())
     return summary
+
+
+def frozen_stretches(
+    tel: pd.DataFrame, *, min_seconds: float = 1.0, sentinel_seconds: float = 0.5
+) -> pd.DataFrame:
+    """Return the stretches of a lap where the timing feed's car data froze.
+
+    On some 2026 laps the feed repeats one car reading -- Speed, RPM, gear and
+    throttle all unchanged, often with a throttle of 104, which is no real value
+    -- for a second or more while the car's position shows it moving on. Distance
+    is integrated from that frozen speed, so the rest of the lap is misplaced: the
+    five laps behind the 2026 China and Suzuka refusals came out between 380 m
+    short and 85 m long against the session's typical lap. A stretch counts when the
+    four channels repeat exactly for ``min_seconds``, or for ``sentinel_seconds``
+    with a throttle above 100. On 2026 China, Suzuka and Monza qualifying every
+    one of the 57 driver pairs :func:`~lapbox.telemetry.compare.compare_drivers`
+    refused had a lap with such a stretch, and no other pair was refused; on 183
+    laps from sessions with no refusals (2023, 2025, 2026 Monaco, Miami and
+    Madrid) nothing was flagged.
+
+    Car samples are the rows FastF1 marks ``Source == "car"``; without a
+    ``Source`` column every row counts. Needs the lap's clock (``Time`` or
+    ``TimeSeconds``) and the four channels; without them nothing can be judged
+    and the result is empty.
+
+    Returns:
+        DataFrame with ``start_distance``, ``end_distance``, ``seconds`` (how long
+        the reading was held), ``speed`` (the held reading, km/h) and
+        ``sentinel`` (whether the throttle read above 100).
+    """
+    columns = ["start_distance", "end_distance", "seconds", "speed", "sentinel"]
+    clock = _seconds(tel)
+    if clock is None or not {"Distance", *FROZEN_CHANNELS} <= set(tel.columns):
+        return pd.DataFrame(columns=columns)
+    if "Source" in tel.columns:
+        car = (tel["Source"] == "car").to_numpy()
+    else:
+        car = np.ones(len(tel), dtype=bool)
+    seconds = clock.to_numpy(dtype=float)[car]
+    distance = tel["Distance"].to_numpy(dtype=float)[car]
+    values = tel.loc[car, list(FROZEN_CHANNELS)].to_numpy(dtype=float)
+    repeats = np.r_[False, np.all(values[1:] == values[:-1], axis=1)]
+
+    rows = []
+    for first, last in _contiguous_runs(repeats):
+        start = first - 1  # the reading that then repeats
+        held = float(seconds[last] - seconds[start])
+        sentinel = bool((values[start : last + 1, FROZEN_CHANNELS.index("Throttle")] > 100).any())
+        if held >= min_seconds or (sentinel and held >= sentinel_seconds):
+            rows.append(
+                {
+                    "start_distance": float(distance[start]),
+                    "end_distance": float(distance[last]),
+                    "seconds": held,
+                    "speed": float(values[start, FROZEN_CHANNELS.index("Speed")]),
+                    "sentinel": sentinel,
+                }
+            )
+    return pd.DataFrame(rows, columns=columns)
 
 
 @dataclass(slots=True)

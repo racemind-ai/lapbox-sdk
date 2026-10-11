@@ -17,7 +17,13 @@ import numpy as np
 import pandas as pd
 from scipy.signal import find_peaks
 
-from lapbox.telemetry.lap import ANALYSIS_CHANNELS, _monotonic_distance, resample_by_distance
+from lapbox.telemetry.lap import (
+    ANALYSIS_CHANNELS,
+    _monotonic_distance,
+    _seconds,
+    frozen_stretches,
+    resample_by_distance,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -88,11 +94,8 @@ def _clock(tel: pd.DataFrame) -> tuple[np.ndarray, np.ndarray] | None:
     Read from ``TimeSeconds`` when present, else FastF1's ``Time`` (a Timedelta
     from the lap's start). ``None`` when the lap carries neither.
     """
-    if "TimeSeconds" in tel.columns:
-        seconds = pd.to_numeric(tel["TimeSeconds"], errors="coerce")
-    elif "Time" in tel.columns and pd.api.types.is_timedelta64_dtype(tel["Time"]):
-        seconds = tel["Time"].dt.total_seconds()
-    else:
+    seconds = _seconds(tel)
+    if seconds is None:
         return None
     frame = pd.DataFrame({"Distance": tel["Distance"], "seconds": seconds}).dropna()
     if len(frame) < 2:
@@ -441,7 +444,8 @@ class ComparisonResult:
     ``residual`` is :func:`alignment_residual` of ``aligned``: how far apart the
     two speed traces still are after alignment, in km/h RMS. ``segments`` is
     :func:`segment_gaps` of ``aligned``: each driver's time between the lap's
-    speed peaks.
+    speed peaks. ``frozen_a`` and ``frozen_b`` are each lap's
+    :func:`~lapbox.telemetry.lap.frozen_stretches`: where its car data froze.
     """
 
     driver_a: str
@@ -451,6 +455,8 @@ class ComparisonResult:
     summary: dict[str, float | str]
     residual: float
     segments: pd.DataFrame = field(default_factory=pd.DataFrame)
+    frozen_a: pd.DataFrame = field(default_factory=pd.DataFrame)
+    frozen_b: pd.DataFrame = field(default_factory=pd.DataFrame)
 
     @property
     def matched(self) -> bool:
@@ -460,7 +466,9 @@ class ComparisonResult:
         time delta, speed delta, corner speeds, minisectors and segments -- describes the
         mismatch rather than the drivers, and should not be shown. Each lap's own
         trace is unaffected. ``True`` means the traces line up; it does not by
-        itself make every derived number accurate.
+        itself make every derived number accurate. When ``False`` and a lap has
+        ``frozen_a`` / ``frozen_b`` stretches, those are the cause: every refusal
+        measured on 2026 qualifying had one.
         """
         return self.residual <= MAX_ALIGNMENT_RESIDUAL
 
@@ -478,7 +486,8 @@ def compare_drivers(
 
     Check :attr:`ComparisonResult.matched` before using anything that compares
     the two laps sample-for-sample: a telemetry dropout can leave one lap
-    impossible to line up with the other.
+    impossible to line up with the other, and ``frozen_a`` / ``frozen_b`` say
+    where the timing feed's car data froze.
 
     ``num_points`` sets the grid of ``aligned``; the minisectors are decided on
     their own finer alignment (see :func:`minisector_dominance`), so a coarse
@@ -528,4 +537,6 @@ def compare_drivers(
         summary=summary,
         residual=residual,
         segments=segment_gaps(aligned),
+        frozen_a=frozen_stretches(tel_a),
+        frozen_b=frozen_stretches(tel_b),
     )

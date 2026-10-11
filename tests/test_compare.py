@@ -15,6 +15,7 @@ from lapbox.telemetry import (
     compare_drivers,
     corner_speeds,
     cumulative_time_delta,
+    frozen_stretches,
     minisector_dominance,
     segment_gaps,
 )
@@ -440,6 +441,15 @@ class TestRawFastF1Telemetry:
         assert raw.summary == plain.summary
         assert raw.matched
         assert raw.residual == pytest.approx(plain.residual)
+
+    def test_each_laps_frozen_stretches_come_along(
+        self, fastf1_tel_a: pd.DataFrame, fastf1_tel_b: pd.DataFrame
+    ) -> None:
+        result = compare_drivers(fastf1_tel_a, fastf1_tel_b, driver_a="VER", driver_b="HAM")
+        pd.testing.assert_frame_equal(result.frozen_a, frozen_stretches(fastf1_tel_a))
+        pd.testing.assert_frame_equal(result.frozen_b, frozen_stretches(fastf1_tel_b))
+        # The synthetic lap holds exactly 300 km/h on its straights, as no car does.
+        assert not result.frozen_a.empty
 
     def test_inputs_are_not_modified(
         self, fastf1_tel_a: pd.DataFrame, fastf1_tel_b: pd.DataFrame

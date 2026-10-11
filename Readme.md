@@ -8,7 +8,7 @@
 [FastF1](https://docs.fastf1.dev/). It is the analysis engine behind
 [LapBox](https://lapbox.in), extracted so anyone can use it on FastF1 data.
 
-> **Status: early development release (`0.1.0.dev7`).** In the library so far:
+> **Status: early development release (`0.1.0.dev8`).** In the library so far:
 > `lapbox.telemetry` (one lap, two laps matched by track position), `lapbox.data` (laps,
 > pit stops, stints, gaps), `lapbox.practice` (long runs), `lapbox.pace` (lap cleaning,
 > fuel-corrected race pace, clean air vs traffic, consistency, ideal lap) and `lapbox.tyres`
@@ -20,7 +20,7 @@
 Until the first PyPI release, install from the tagged source:
 
 ```bash
-pip install "lapbox @ https://github.com/racemind-ai/lapbox-sdk/archive/refs/tags/v0.1.0.dev7.tar.gz"
+pip install "lapbox @ https://github.com/racemind-ai/lapbox-sdk/archive/refs/tags/v0.1.0.dev8.tar.gz"
 ```
 
 Python 3.11+. Depends on FastF1, pandas, NumPy and SciPy.
@@ -179,7 +179,9 @@ traces still are after alignment (`result.residual`, km/h RMS), and `result.matc
 `False` above 15 km/h. That threshold was measured on 250 driver pairs: it caught 32 of
 33 physically impossible pairs and withheld 8 of 217 sound ones. When `matched` is
 `False`, don't use the time delta, speed delta, corner speeds, minisectors or segments —
-they describe the mismatch, not the drivers.
+they describe the mismatch, not the drivers. `result.frozen_a` and `result.frozen_b` say
+whether a lap's car data froze in the timing feed, and where (see Limits): on 2026
+qualifying that was behind every refusal measured.
 
 FastF1's own `utils.delta_time` is deprecated and documented as *"not actually very
 accurate"*.
@@ -211,6 +213,15 @@ accurate"*.
   fall were a median 113 ms from a gap rebuilt from the cars' positions, the biggest gaining
   and losing segments 65 ms, about that check's own accuracy. A segment often holds several
   corners.
+- **Some 2026 laps have frozen car data.** The timing feed sometimes repeats one car reading —
+  speed, RPM, gear and throttle all unchanged, often with a throttle of 104 — for one to 25
+  seconds while the car's position moves on. `Distance` is integrated from that speed, so the
+  lap is misplaced (the five worst laps came out 380 m short to 85 m long), and it can't be
+  matched with another. `frozen_stretches(tel)` finds these stretches. On 2026 China, Suzuka
+  and Monza qualifying it was behind all 57 refused driver pairs (14, 16 and 5 of 22 fastest
+  laps had one); on 183 laps from 2023, 2025 and three other 2026 sessions it flagged none.
+  Rebuilding the speed from the positions was tried and isn't reliable yet: about 50 ms off
+  at the sector lines at Suzuka, 160 ms at Monza.
 - **Corners are found where the car slows down,** so the count won't match the
   circuit's official corner numbering: flat-out kinks produce no speed minimum. What
   you get is the same corners on every lap of a circuit, which is what comparisons need.
@@ -251,6 +262,7 @@ accurate"*.
 | `detect_braking_zones(tel)`, `detect_full_throttle_zones(tel)` | Zone tables |
 | `compute_gforces(distance, speed, x, y)` | Longitudinal and lateral g from speed and the racing line |
 | `channel_summary(tel)` | Top speed, full-throttle %, braking %, … |
+| `frozen_stretches(tel)` | Where the timing feed's car data froze (one reading repeated), which misplaces the lap |
 | `TelemetryAnalyzer().analyze(tel)` | All of the above for one lap |
 
 | Two laps | |
