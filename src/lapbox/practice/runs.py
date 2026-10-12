@@ -210,8 +210,7 @@ def classify_run(run: Run, session_best: float | None = None) -> str:
     fastest lap of the session; without it, short runs cannot be confirmed as
     representative and fall through to ``other``.
     """
-    at_pace = int(representative_mask(np.asarray(run.lap_times, dtype=float)).sum())
-    if at_pace >= MIN_LONG_RUN:
+    if _laps_at_pace(run) >= MIN_LONG_RUN:
         return "long_run"
     if run.length <= MAX_QUALI_SIM and session_best and run.best <= session_best * QUALI_SIM_CUTOFF:
         return "quali_sim"
@@ -223,6 +222,11 @@ def representative_mask(times: np.ndarray, cutoff: float = RUN_OUTLIER_CUTOFF) -
     if times.size == 0:
         return np.zeros(0, dtype=bool)
     return times <= float(np.min(times)) * cutoff
+
+
+def _laps_at_pace(run: Run) -> int:
+    """How many of a run's laps were at race pace — what makes it a long run."""
+    return int(representative_mask(np.asarray(run.lap_times, dtype=float)).sum())
 
 
 def long_run_pace(run: Run, *, cutoff: float = RUN_OUTLIER_CUTOFF) -> LongRunPace:
@@ -273,10 +277,16 @@ def session_runs(laps: pd.DataFrame) -> dict[str, list[tuple[Run, str]]]:
 
 
 def longest_run_length(laps: pd.DataFrame) -> int:
-    """The longest run of consecutive timed laps anyone managed.
+    """The most laps at race pace anyone managed in one run.
 
     Used to decide whether a session can support long-run analysis at all —
-    a disrupted or wet session may simply not contain one.
+    a disrupted or wet session may simply not contain one. Laps are counted as
+    :func:`classify_run` counts them, so ``longest_run_length(laps) >=
+    MIN_LONG_RUN`` exactly when :func:`session_runs` finds a long run.
+
+    Counting every timed lap instead let sessions through with no long run in
+    them: 6 of 145 practice sessions measured (2022-2026), among them 2024
+    Japan FP2, whose longest run was five timed laps, three of them at pace.
     """
     runs = detect_runs(laps)
-    return max((r.length for r in runs), default=0)
+    return max((_laps_at_pace(r) for r in runs), default=0)

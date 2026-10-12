@@ -223,6 +223,38 @@ class TestSessionSummary:
     def test_longest_run_of_an_empty_session_is_zero(self) -> None:
         assert longest_run_length(pd.DataFrame()) == 0
 
+    @staticmethod
+    def _session(times: list[float]) -> pd.DataFrame:
+        return frame([lap("VER", i + 1, t) for i, t in enumerate(times)])
+
+    def test_longest_run_counts_laps_at_race_pace(self) -> None:
+        """A qualifying run padded to five timed laps is not a long run.
+
+        Counted by timed laps, 2024 Japan FP2 passed with none in it, so the
+        session after it, which had 19, was never read.
+        """
+        assert longest_run_length(self._session([110.0, 80.0, 104.0, 80.3, 112.0])) == 2
+        # Six timed laps, one of them stuck in traffic.
+        assert longest_run_length(self._session([95.0, 95.1, 130.0, 95.2, 95.3, 95.4])) == 5
+
+    def test_longest_run_agrees_with_session_runs(self) -> None:
+        """At least MIN_LONG_RUN exactly when session_runs finds a long run."""
+        sessions = [
+            self._session([110.0, 80.0, 104.0, 80.3, 112.0]),
+            self._session([95.0, 95.1, 95.2, 95.3, 130.0]),
+            self._session([95.0, 95.1, 130.0, 95.2, 95.3, 95.4]),
+            self._session([95.0] * 14),
+            frame(
+                [lap("VER", i + 1, t) for i, t in enumerate([110.0, 80.0, 104.0, 80.3, 112.0])]
+                + [lap("HAM", i + 1, t) for i, t in enumerate([96.0, 130.0, 96.2, 96.1, 96.3])]
+            ),
+        ]
+        for laps in sessions:
+            has_long_run = any(
+                kind == "long_run" for runs in session_runs(laps).values() for _, kind in runs
+            )
+            assert (longest_run_length(laps) >= MIN_LONG_RUN) is has_long_run
+
 
 class TestRawFastF1Laps:
     """``session.laps`` carries the lap time only as a ``LapTime`` Timedelta."""

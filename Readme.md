@@ -8,7 +8,7 @@
 [FastF1](https://docs.fastf1.dev/). It is the analysis engine behind
 [LapBox](https://lapbox.in), extracted so anyone can use it on FastF1 data.
 
-> **Status: early development release (`0.1.0.dev9`).** In the library so far:
+> **Status: early development release (`0.1.0.dev10`).** In the library so far:
 > `lapbox.telemetry` (one lap, two laps matched by track position), `lapbox.data` (laps,
 > pit stops, stints, gaps), `lapbox.practice` (long runs), `lapbox.pace` (lap cleaning,
 > fuel-corrected race pace, clean air vs traffic, consistency, ideal lap) and `lapbox.tyres`
@@ -20,7 +20,7 @@
 Until the first PyPI release, install from the tagged source:
 
 ```bash
-pip install "lapbox @ https://github.com/racemind-ai/lapbox-sdk/archive/refs/tags/v0.1.0.dev9.tar.gz"
+pip install "lapbox @ https://github.com/racemind-ai/lapbox-sdk/archive/refs/tags/v0.1.0.dev10.tar.gz"
 ```
 
 Python 3.11+. Depends on FastF1, pandas, NumPy and SciPy.
@@ -296,7 +296,7 @@ the same piece of track and ends exactly at the official lap-time gap.
 | `classify_run(run, session_best)` | `long_run`, `quali_sim` or `other` |
 | `session_runs(laps)` | Every driver's runs, classified |
 | `long_run_pace(run)` → `LongRunPace` | Median pace, degradation slope (fuel-corrected), consistency, laps dropped |
-| `longest_run_length(laps)` | Whether a session contains a long run at all |
+| `longest_run_length(laps)` | The most laps at race pace in one run: at least `MIN_LONG_RUN` (5) exactly when the session contains a long run |
 
 ## What's in `lapbox.pace`
 
