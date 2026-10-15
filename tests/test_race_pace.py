@@ -7,6 +7,8 @@ runs in the browser.
 
 from __future__ import annotations
 
+import math
+
 import pandas as pd
 import pytest
 
@@ -241,19 +243,31 @@ def timed(driver: str, seconds: list[float | None], pit: tuple[int, ...] = ()) -
 
 
 class TestDriverConsistency:
+    # Lap 1 (a standing start, 96-97 s here) is never counted; laps 2 on are.
     def test_computes_cv_best_and_gap_to_best_over_representative_laps(self) -> None:
-        c = driver_consistency(laps_frame(timed("VER", [90.0, 90.2, 90.1, 90.3])), "VER")
+        c = driver_consistency(laps_frame(timed("VER", [97.0, 90.0, 90.2, 90.1, 90.3])), "VER")
         assert c.best == pytest.approx(90.0)
         assert c.laps == 4
-        assert c.series[0] == (1, 0)
+        assert c.series[0] == (2, 0)
         assert 0 < c.cv < 1  # very consistent -> tiny CV
 
     def test_excludes_pit_laps_and_compromised_laps(self) -> None:
         # A safety-car lap (120s) and a pit lap must not count.
-        rows = timed("HAM", [90.0, 90.2, 120.0, 90.1, 95.0], pit=(5,))
+        rows = timed("HAM", [96.0, 90.0, 90.2, 120.0, 90.1, 95.0], pit=(6,))
         c = driver_consistency(laps_frame(rows), "HAM")
         assert c.laps == 3  # 90.0, 90.2, 90.1
         assert c.best == pytest.approx(90.0)
+
+    def test_lap_1_is_not_counted_even_within_107_percent(self) -> None:
+        """Lap 1 is decided by the grid and the start, as the clean-air split treats it.
+
+        Counted, a standing-start lap within 107 % of the best is still a slow outlier:
+        SAI, 2025 United States GP, 2.26 s of spread with it and 0.36 s without.
+        """
+        c = driver_consistency(laps_frame(timed("SAI", [95.5, 90.0, 90.2, 90.1, 90.3])), "SAI")
+        assert c.laps == 4
+        assert [n for n, _ in c.series] == [2, 3, 4, 5]
+        assert c.std == pytest.approx(math.sqrt(0.0125))  # 90.0, 90.2, 90.1, 90.3 only
 
     def test_is_none_with_too_few_timed_laps(self) -> None:
         assert driver_consistency(laps_frame(timed("BOT", [90.0, None])), "BOT") is None

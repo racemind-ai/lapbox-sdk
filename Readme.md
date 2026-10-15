@@ -8,7 +8,7 @@
 [FastF1](https://docs.fastf1.dev/). It is the analysis engine behind
 [LapBox](https://lapbox.in), extracted so anyone can use it on FastF1 data.
 
-> **Status: early development release (`0.1.0.dev10`).** In the library so far:
+> **Status: early development release (`0.1.0.dev11`).** In the library so far:
 > `lapbox.telemetry` (one lap, two laps matched by track position), `lapbox.data` (laps,
 > pit stops, stints, gaps), `lapbox.practice` (long runs), `lapbox.pace` (lap cleaning,
 > fuel-corrected race pace, clean air vs traffic, consistency, ideal lap) and `lapbox.tyres`
@@ -20,7 +20,7 @@
 Until the first PyPI release, install from the tagged source:
 
 ```bash
-pip install "lapbox @ https://github.com/racemind-ai/lapbox-sdk/archive/refs/tags/v0.1.0.dev10.tar.gz"
+pip install "lapbox @ https://github.com/racemind-ai/lapbox-sdk/archive/refs/tags/v0.1.0.dev11.tar.gz"
 ```
 
 Python 3.11+. Depends on FastF1, pandas, NumPy and SciPy.
@@ -307,7 +307,7 @@ the same piece of track and ends exactly at the official lap-time gap.
 | `fuel_correct(laps)` | Every timed, non-pit lap normalised to end-of-race fuel |
 | `true_pace_ranking(laps)` | Drivers ranked on fuel-corrected median pace, raw rank alongside |
 | `clean_air_split(laps, driver)`, `clean_air_ranking(laps)` | Fuel-corrected pace in clean air vs within 2 s of the car ahead |
-| `driver_consistency(laps, driver)`, `consistency_ranking(laps)` | Spread (std, CV %) of representative laps, lap by lap |
+| `driver_consistency(laps, driver)`, `consistency_ranking(laps)` | Spread (std, CV %) of representative laps (from lap 2, no pit laps, within 107 % of the best), lap by lap |
 | `ideal_lap(laps, driver)`, `biggest_loss(ideal)` | Sum of best sectors vs the fastest lap, and where that lap lost most |
 
 These are the same calculations the LapBox Race Analysis page runs in the browser. On
