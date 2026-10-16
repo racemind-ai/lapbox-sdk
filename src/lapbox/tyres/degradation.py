@@ -1,20 +1,34 @@
 """Tyre degradation per compound: seconds lost per lap of tyre age.
 
 Moved from LapBox's ``ml/training/tyre_degradation.py``. The model is a
-deliberately *interpretable* linear regression per compound:
+deliberately *interpretable* straight line per compound:
 
-    lap_time ≈ intercept + degradation · tyre_age + fuel_coef · fuel_load
+    lap_time − fuel_effect ≈ intercept + degradation · tyre_age
 
-The fuel covariate absorbs the large, confounding effect of the car getting
-lighter as fuel burns, so the ``tyre_age`` coefficient estimates **seconds lost
-per lap of tyre age** — the number race engineers reason about.
+The car gets lighter as fuel burns, so every lap is first corrected by the
+fuel still to burn at :data:`lapbox.practice.FUEL_EFFECT_S_PER_LAP` per lap —
+the constant :func:`lapbox.pace.fuel_correct` uses. The slope against tyre age
+is then the **seconds lost per lap of tyre age** race engineers reason about.
+Only laps within :data:`lapbox.pace.REPRESENTATIVE` (107 %) of the driver's
+best lap are fitted: safety-car, traffic and mistake laps are not tyre wear.
 
-It pools every driver on a compound. On low-wear circuits that is weakly
-determined: measured on 2026 Monza it gave the soft tyre *negative* degradation
-(−0.06 s/lap) with R² 0.04–0.08, and adding one intercept per driver, or fitting
-stint by stint (:func:`lapbox.tyres.stint_degradation`), moved the estimates by
-up to 2–3× on the same laps. Nothing published says which is right. Read
-``degradation_s_per_lap`` together with ``r2`` and ``laps``.
+Until 0.1.0.dev12 the fuel effect was a second fitted coefficient. Tyre age and
+fuel both move with the lap number, so the two were weakly separable: on 2026
+Monza the soft tyre came out at −0.06 s/lap with R² 0.04–0.08. Measured on 65
+Grands Prix of 2024–2026, fitting each race's first half and predicting its
+second half's representative laps, the fixed fuel effect and the 107 % filter
+cut the median lap-time error by 19.4 % (0.79 → 0.64 s) and were better in
+71 % of races. How lap times change *inside* a stint was predicted no better
+(−1.7 %, better in half the races), and 33 % of those half-race compound rates
+still came out negative (42 % before): on low-wear circuits the slope is small
+next to the noise. R² is lower than before because it no longer counts the fuel
+burn as explained. Read ``degradation_s_per_lap`` together with ``r2`` and
+``laps``, and clamp it before planning with it.
+
+In a mixed-weather race most intermediate and wet laps are slower than 107 % of
+the driver's best on slicks and are left out (of eight rain-tyre fits in those
+65 races, five went and two kept under a third of their laps). Fit rain tyres
+on their own laps.
 """
 
 from __future__ import annotations
@@ -25,7 +39,8 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from lapbox.pace.race import _present, _seconds
+from lapbox.pace.race import REPRESENTATIVE, _present, _seconds
+from lapbox.practice import FUEL_EFFECT_S_PER_LAP
 
 logger = logging.getLogger(__name__)
 
@@ -37,10 +52,13 @@ class CompoundDegradation:
     compound: str
     degradation_s_per_lap: float
     intercept_s: float
+    """Lap time on a new tyre with the fuel all burned."""
     fuel_coef: float | None
-    """Seconds per unit of fuel: per kg with a ``fuel_load_est`` column, per lap
-    still to run when the load is estimated from ``LapNumber``."""
+    """The fuel correction applied, in seconds per unit of fuel: per kg with a
+    ``fuel_load_est`` column, per lap still to run when the load is taken from
+    ``LapNumber``. ``None`` when no correction was made."""
     r2: float
+    """R² of the fuel-corrected lap times against tyre age."""
     laps: int
 
 
@@ -50,8 +68,7 @@ def _least_squares(x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, float, flo
     The steps scikit-learn's ``LinearRegression`` takes: centre both sides, take
     the minimum-norm least-squares solution, put the intercept back from the
     means. On nine real compound fits it gave identical coefficients and
-    intercepts, and R² within 1e-16. A covariate with no spread (fuel in a
-    practice session) gets a coefficient of 0, as there.
+    intercepts, and R² within 1e-16.
     """
     x_mean = x.mean(axis=0)
     y_mean = y.mean()
@@ -65,20 +82,24 @@ def _least_squares(x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, float, flo
 
 
 class TyreDegradationModel:
-    """Per-compound tyre-degradation regression.
+    """Per-compound tyre-degradation fit.
 
     Takes either LapBox's engineered laps (``compound``, ``lap_time_seconds``,
-    ``tyre_age`` or ``stint_lap``, ``fuel_load_est``) or FastF1's laps as they
-    come (``Compound``, ``LapTime``, ``TyreLife``, ``LapNumber``). With FastF1's
-    laps, pit laps are dropped and the fuel load is taken as the laps still to
-    run; clean them first (:class:`lapbox.pace.LapCleaningPipeline`), because a
-    safety-car lap is as slow as a worn tyre.
+    ``tyre_age`` or ``stint_lap``, ``fuel_load_est`` with ``lap_number``) or
+    FastF1's laps as they come (``Compound``, ``LapTime``, ``TyreLife``,
+    ``LapNumber``). With FastF1's laps, pit laps are dropped and the fuel load is
+    taken as the laps still to run, as in a race; clean them first
+    (:class:`lapbox.pace.LapCleaningPipeline`). A ``fuel_load_est`` in kilograms
+    is turned into laps of fuel by how fast it falls with the lap number; one
+    that never changes (practice, qualifying) gets no correction. Fit one session
+    at a time: the 107 % filter keeps each driver's laps against their best.
 
     Args:
         min_laps: Minimum laps required to fit a compound.
         age_column: Column holding tyre age in laps; falls back to ``stint_lap``,
             then FastF1's ``TyreLife``.
-        use_fuel_correction: Include the fuel load as a covariate when there is one.
+        use_fuel_correction: Take the fuel effect off each lap when there is a
+            fuel load to read.
     """
 
     def __init__(
@@ -99,33 +120,38 @@ class TyreDegradationModel:
         return self._compounds
 
     def fit(self, laps: pd.DataFrame) -> TyreDegradationModel:
-        """Fit a degradation regression per compound present in ``laps``."""
+        """Fit a degradation line per compound present in ``laps``.
+
+        Raises:
+            ValueError: If a column is missing, or ``fuel_load_est`` changes from
+                lap to lap with no lap number to say how much fuel a lap burns.
+        """
         frame = self._frame(laps)
         if frame is None:
             raise ValueError("Laps need 'compound', 'lap_time_seconds' and a tyre-age column.")
 
-        use_fuel = self.use_fuel_correction and "fuel" in frame.columns
+        fuel_coef = self._fuel_coef(frame) if self.use_fuel_correction else None
+        usable = frame.dropna(subset=["time", "age"] + (["fuel"] if fuel_coef else []))
+        best = usable.groupby("driver", dropna=False)["time"].transform("min")
+        usable = usable[usable["time"] <= best * REPRESENTATIVE]
         self._compounds = {}
 
-        for compound, group in frame.groupby("compound"):
-            feature_cols = ["age"] + (["fuel"] if use_fuel else [])
-            usable = group.dropna(subset=["time", "age"])
-            if use_fuel:
-                usable = usable.dropna(subset=["fuel"])
-            if len(usable) < self.min_laps or usable["age"].nunique() < 2:
+        for compound, group in usable.groupby("compound"):
+            if len(group) < self.min_laps or group["age"].nunique() < 2:
                 continue
 
-            x = usable[feature_cols].to_numpy(dtype=float)
-            y = usable["time"].to_numpy(dtype=float)
-            coef, intercept, r2 = _least_squares(x, y)
+            time = group["time"].to_numpy(dtype=float)
+            if fuel_coef:
+                time = time - fuel_coef * group["fuel"].to_numpy(dtype=float)
+            coef, intercept, r2 = _least_squares(group[["age"]].to_numpy(dtype=float), time)
 
             self._compounds[str(compound)] = CompoundDegradation(
                 compound=str(compound),
                 degradation_s_per_lap=float(coef[0]),
                 intercept_s=intercept,
-                fuel_coef=float(coef[1]) if use_fuel else None,
+                fuel_coef=fuel_coef,
                 r2=r2,
-                laps=int(len(usable)),
+                laps=int(len(group)),
             )
 
         logger.info("Tyre degradation fitted", extra={"compounds": len(self._compounds)})
@@ -169,8 +195,11 @@ class TyreDegradationModel:
     # -- Reading the laps ----------------------------------------------------
 
     def _frame(self, laps: pd.DataFrame) -> pd.DataFrame | None:
-        """``compound``, ``time``, ``age`` (and ``fuel``) from either naming, or None."""
+        """``compound``, ``driver``, ``time``, ``age`` (``lap``, ``fuel``) from either
+        naming, or None. Without a driver column every lap counts as one driver's."""
         compound = next((c for c in ("compound", "Compound") if c in laps.columns), None)
+        driver = next((c for c in ("driver", "Driver") if c in laps.columns), None)
+        lap = next((c for c in ("lap_number", "LapNumber") if c in laps.columns), None)
         age = self._resolve_age_column(laps)
         if "lap_time_seconds" in laps.columns:
             time = laps["lap_time_seconds"]
@@ -182,16 +211,49 @@ class TyreDegradationModel:
             return None
 
         frame = pd.DataFrame(
-            {"compound": laps[compound], "time": time, "age": laps[age]}, index=laps.index
+            {
+                "compound": laps[compound],
+                "driver": laps[driver] if driver else "",
+                "time": time,
+                "age": laps[age],
+            },
+            index=laps.index,
         )
+        if lap is not None:
+            frame["lap"] = laps[lap]
         if "fuel_load_est" in laps.columns:
             frame["fuel"] = laps["fuel_load_est"]
-        elif "LapNumber" in laps.columns and laps["LapNumber"].notna().any():
-            frame["fuel"] = (laps["LapNumber"].max() - laps["LapNumber"]).clip(lower=0)
+        elif lap == "LapNumber" and laps[lap].notna().any():
+            frame["fuel"] = (laps[lap].max() - laps[lap]).clip(lower=0)
         # FastF1's laps still hold the pit laps; LapBox's engineered laps never do.
         if any(c in laps.columns for c in ("PitInTime", "PitOutTime", "PitInTimeSeconds")):
             frame = frame[~(_present(laps, "PitInTime") | _present(laps, "PitOutTime"))]
         return frame
+
+    @staticmethod
+    def _fuel_coef(frame: pd.DataFrame) -> float | None:
+        """Seconds per unit of ``fuel`` that make one lap's burn ``FUEL_EFFECT_S_PER_LAP``.
+
+        The unit is read off how fast the load falls with the lap number: one per
+        lap for laps still to run, the kilograms burned per lap for
+        ``fuel_load_est``. A load that does not fall gets 0.0, no load at all None.
+        """
+        known = frame.dropna(subset=["fuel"]) if "fuel" in frame.columns else frame.iloc[:0]
+        if known.empty:
+            return None
+        if known["fuel"].nunique() < 2:
+            return 0.0
+        paired = known.dropna(subset=["lap"]) if "lap" in known.columns else known.iloc[:0]
+        if paired.empty:
+            raise ValueError(
+                "'fuel_load_est' changes from lap to lap but there is no lap number to tell "
+                "how much a lap burns; add 'lap_number', or pass use_fuel_correction=False."
+            )
+        if paired["lap"].nunique() < 2:
+            return 0.0
+        lap, fuel = paired["lap"].astype(float), paired["fuel"].astype(float)
+        per_lap = -float(np.polyfit(lap, fuel, 1)[0])
+        return FUEL_EFFECT_S_PER_LAP / per_lap if per_lap > 0 else 0.0
 
     def _resolve_age_column(self, laps: pd.DataFrame) -> str | None:
         for name in (self.age_column, "stint_lap", "TyreLife"):

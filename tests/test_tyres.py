@@ -20,10 +20,10 @@ pytestmark = pytest.mark.unit
 def engineered_laps(*, n_drivers: int = 8, laps_per_driver: int = 25) -> pd.DataFrame:
     """LapBox's engineered laps with a known signal (``build_ml_laps`` in its tests).
 
-    ``lap_time = 90 + driver_offset + event_offset + 0.08·tyre_age + 0.02·fuel + noise``.
-    Pit lap and starting compound vary per driver, so each compound is seen across a
-    range of fuel loads; otherwise tyre age and fuel would both be linear in the lap
-    and the degradation coefficient could not be separated from fuel.
+    ``lap_time = 90 + driver_offset + event_offset + 0.08·tyre_age + fuel effect + noise``,
+    the fuel effect ``FUEL_EFFECT_S_PER_LAP`` per lap still to run, as the model
+    assumes. ``fuel_load_est`` burns down from 110 kg like LapBox's (4.4 kg a lap).
+    Pit lap and starting compound vary per driver.
     """
     rng = np.random.default_rng(0)
     events = (("Monza GP", -1.5), ("Silverstone GP", 1.5))
@@ -52,7 +52,7 @@ def engineered_laps(*, n_drivers: int = 8, laps_per_driver: int = 25) -> pd.Data
                         + offset
                         + event_offset
                         + 0.08 * tyre_age
-                        + 0.02 * fuel
+                        + FUEL_EFFECT_S_PER_LAP * (laps_per_driver - lap)
                         + float(rng.normal(0, 0.05)),
                     }
                 )
@@ -89,10 +89,10 @@ class TestTyreDegradationModel:
         model = TyreDegradationModel().fit(ml_laps[ml_laps["event_name"] == "Monza GP"])
         assert {"SOFT", "MEDIUM"}.issubset(model.compounds.keys())
         # The synthetic data has 0.08 s/lap; recovered after fuel correction
-        # (driver-to-driver offsets keep R² below 1).
+        # (driver-to-driver offsets keep R² near 0.5).
         for compound in ("SOFT", "MEDIUM"):
             assert model.degradation_rate(compound) == pytest.approx(0.08, abs=0.02)
-            assert model.compounds[compound].r2 > 0.5
+            assert model.compounds[compound].r2 > 0.4
 
     def test_predict_time_loss_scales_with_age(self, ml_laps: pd.DataFrame) -> None:
         model = TyreDegradationModel().fit(ml_laps)
@@ -116,26 +116,39 @@ class TestTyreDegradationModel:
             TyreDegradationModel().fit(pd.DataFrame({"compound": ["SOFT"]}))
 
 
-class TestLeastSquares:
-    """The fit that replaced scikit-learn's ``LinearRegression``."""
+def one_stint(*, start: int = 1, laps: int = 10, total: int = 50, kg: float = 2.0) -> pd.DataFrame:
+    """One driver's stint on new hards with no noise: tyre age and fuel both move
+    with the lap number. ``lap_time = 92 + 0.1·age + fuel effect``."""
+    lap = np.arange(start, start + laps, dtype=float)
+    age = lap - start + 1
+    return pd.DataFrame(
+        {
+            "driver": "DR00",
+            "compound": "HARD",
+            "lap_number": lap,
+            "tyre_age": age,
+            "fuel_load_est": kg * (total - lap),
+            "lap_time_seconds": 92.0 + 0.1 * age + FUEL_EFFECT_S_PER_LAP * (total - lap),
+        }
+    )
 
-    def test_noiseless_data_is_recovered_exactly(self) -> None:
-        age = np.array([1, 2, 3, 4, 5, 1, 2, 3, 4, 5], dtype=float)
-        fuel = np.array([100, 90, 80, 70, 60, 50, 40, 30, 20, 10], dtype=float)
-        laps = pd.DataFrame(
-            {
-                "compound": "HARD",
-                "tyre_age": age,
-                "fuel_load_est": fuel,
-                "lap_time_seconds": 92.0 + 0.1 * age + 0.03 * fuel,
-            }
-        )
-        fit = TyreDegradationModel().fit(laps).compounds["HARD"]
+
+class TestFuelAndRepresentativeLaps:
+    """The fuel effect is fixed, not fitted; only laps within 107 % are fitted."""
+
+    def test_a_stint_where_age_and_fuel_move_together_is_recovered(self) -> None:
+        # A fitted fuel coefficient cannot be told apart from tyre age here.
+        fit = TyreDegradationModel().fit(one_stint()).compounds["HARD"]
         assert fit.degradation_s_per_lap == pytest.approx(0.1, abs=1e-9)
-        assert fit.fuel_coef == pytest.approx(0.03, abs=1e-9)
+        assert fit.fuel_coef == pytest.approx(FUEL_EFFECT_S_PER_LAP / 2.0)
         assert fit.intercept_s == pytest.approx(92.0, abs=1e-9)
         assert fit.r2 == pytest.approx(1.0)
         assert fit.laps == 10
+
+    def test_the_fuel_unit_is_read_from_the_burn_per_lap(self) -> None:
+        heavy = TyreDegradationModel().fit(one_stint(kg=1.6)).compounds["HARD"]
+        assert heavy.fuel_coef == pytest.approx(FUEL_EFFECT_S_PER_LAP / 1.6)
+        assert heavy.degradation_s_per_lap == pytest.approx(0.1, abs=1e-9)
 
     def test_a_constant_fuel_load_gets_a_zero_coefficient(self) -> None:
         # Practice and qualifying: LapBox sets one fuel load for every lap.
@@ -150,6 +163,38 @@ class TestLeastSquares:
         fit = TyreDegradationModel().fit(laps).compounds["SOFT"]
         assert fit.fuel_coef == 0.0
         assert fit.degradation_s_per_lap == pytest.approx(0.1)
+
+    def test_a_falling_fuel_load_without_lap_numbers_raises(self) -> None:
+        laps = one_stint().drop(columns=["lap_number"])
+        with pytest.raises(ValueError, match="lap number"):
+            TyreDegradationModel().fit(laps)
+        fit = TyreDegradationModel(use_fuel_correction=False).fit(laps).compounds["HARD"]
+        assert fit.fuel_coef is None
+        assert fit.degradation_s_per_lap == pytest.approx(0.1 - FUEL_EFFECT_S_PER_LAP)
+
+    def test_missing_fuel_loads_mean_no_correction(self) -> None:
+        laps = one_stint().assign(fuel_load_est=np.nan)
+        fit = TyreDegradationModel().fit(laps).compounds["HARD"]
+        assert fit.fuel_coef is None
+        assert fit.laps == 10
+
+    def test_laps_beyond_107_percent_of_the_drivers_best_are_left_out(self) -> None:
+        laps = one_stint(laps=12)
+        slow = laps.copy()
+        slow.loc[[4, 5], "lap_time_seconds"] *= 1.3  # a safety car
+        fit = TyreDegradationModel().fit(slow).compounds["HARD"]
+        assert fit.degradation_s_per_lap == pytest.approx(0.1, abs=1e-9)
+        assert fit.r2 == pytest.approx(1.0)
+        assert fit.laps == 10
+
+    def test_107_percent_is_measured_against_each_drivers_own_best(self) -> None:
+        # A driver 8 % off the fastest keeps every lap.
+        quick = one_stint()
+        slow = one_stint().assign(
+            driver="DR01", lap_time_seconds=lambda d: d["lap_time_seconds"] * 1.08
+        )
+        fit = TyreDegradationModel().fit(pd.concat([quick, slow], ignore_index=True))
+        assert fit.compounds["HARD"].laps == 20
 
     def test_a_compound_without_age_spread_is_not_fitted(self) -> None:
         laps = pd.DataFrame(
@@ -173,13 +218,15 @@ class TestFastF1Laps:
                 fit.degradation_s_per_lap, rel=1e-6
             )
             assert fastf1[compound].r2 == pytest.approx(fit.r2, rel=1e-6)
-            # Laps still to run instead of kg: the same fit, the fuel term rescaled.
-            assert fastf1[compound].fuel_coef == pytest.approx(fit.fuel_coef * 110 / 25, rel=1e-6)
+            # Laps still to run instead of kg: the same correction, in its own unit.
+            assert fastf1[compound].fuel_coef == pytest.approx(FUEL_EFFECT_S_PER_LAP)
+            assert fit.fuel_coef == pytest.approx(FUEL_EFFECT_S_PER_LAP * 25 / 110)
 
     def test_pit_laps_are_dropped(self, ml_laps: pd.DataFrame) -> None:
         laps = as_fastf1(ml_laps[ml_laps["event_name"] == "Monza GP"]).reset_index(drop=True)
         with_pit = laps.copy()
-        with_pit.loc[0, "LapTime"] = pd.Timedelta(seconds=120)
+        # 2 s slow: inside 107 %, so only the pit rule can drop it.
+        with_pit.loc[0, "LapTime"] += pd.Timedelta(seconds=2)
         with_pit.loc[0, "PitInTime"] = pd.Timedelta(minutes=30)
         expected = TyreDegradationModel().fit(laps.drop(index=0)).compounds
         assert TyreDegradationModel().fit(with_pit).compounds == expected

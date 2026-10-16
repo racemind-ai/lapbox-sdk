@@ -8,7 +8,7 @@
 [FastF1](https://docs.fastf1.dev/). It is the analysis engine behind
 [LapBox](https://lapbox.in), extracted so anyone can use it on FastF1 data.
 
-> **Status: early development release (`0.1.0.dev11`).** In the library so far:
+> **Status: early development release (`0.1.0.dev12`).** In the library so far:
 > `lapbox.telemetry` (one lap, two laps matched by track position), `lapbox.data` (laps,
 > pit stops, stints, gaps), `lapbox.practice` (long runs), `lapbox.pace` (lap cleaning,
 > fuel-corrected race pace, clean air vs traffic, consistency, ideal lap) and `lapbox.tyres`
@@ -20,7 +20,7 @@
 Until the first PyPI release, install from the tagged source:
 
 ```bash
-pip install "lapbox @ https://github.com/racemind-ai/lapbox-sdk/archive/refs/tags/v0.1.0.dev11.tar.gz"
+pip install "lapbox @ https://github.com/racemind-ai/lapbox-sdk/archive/refs/tags/v0.1.0.dev12.tar.gz"
 ```
 
 Python 3.11+. Depends on FastF1, pandas, NumPy and SciPy.
@@ -127,9 +127,10 @@ about the method.
 ### Tyre degradation, two ways
 
 `stint_degradation` fits a slope through each stint's fuel-corrected laps, and
-`compound_summary` takes the median per compound. `TyreDegradationModel` fits one
-regression per compound over every driver, with the fuel load as a second term; clean the
-laps first, because a safety-car lap is as slow as a worn tyre.
+`compound_summary` takes the median per compound. `TyreDegradationModel` fits one line
+per compound over every driver: lap time, with the same assumed fuel effect taken off,
+against tyre age, on laps within 107 % of the driver's best. Clean the laps first; the
+107 % filter catches safety-car laps, not every slow one.
 
 ```python
 import fastf1
@@ -152,15 +153,16 @@ print(model.summary()[["compound", "degradation_s_per_lap", "r2", "laps"]].round
 1   MEDIUM      15   404      -0.001    -0.091      0.024
 2     HARD      16   489       0.005    -0.026      0.061
   compound  degradation_s_per_lap     r2  laps
-0     SOFT                 -0.083  0.892    24
-1   MEDIUM                 -0.000  0.633   399
-2     HARD                  0.025  0.564   493
+0     SOFT                 -0.133  0.173    24
+1   MEDIUM                 -0.008  0.021   399
+2     HARD                  0.014  0.067   491
 ```
 
 Monza barely wears tyres, and here both methods say the soft got *quicker* with age, on
 20–24 laps. Neither is a measurement of the tyre alone: the slopes also carry track
-evolution, fuel assumptions and who ran which stint. Read every rate with its laps (and,
-for the model, its `r2`).
+evolution, fuel assumptions and who ran which stint. The low `r2` is the honest part:
+tyre age explains little of how the lap times vary here. Read every rate with its laps
+(and, for the model, its `r2`).
 
 ## Why the laps are matched first
 
@@ -243,13 +245,23 @@ the same piece of track and ends exactly at the official lap-time gap.
   timed on a clean lap, or when the sum of best sectors comes out slower than the fastest
   lap (FastF1 leaves lap 1's S1 blank after a standing start).
 - **Per-compound degradation is weakly determined on low-wear circuits.**
-  `TyreDegradationModel` pools every driver on a compound. On 2026 Monza it gave the soft
-  −0.06 s/lap with R² 0.04–0.08; adding one intercept per driver, or fitting stint by
-  stint, moved the estimates by up to 2–3× on the same laps. Nothing published says which
-  is right, so the library reports the fit as it comes out, with `r2` and `laps` beside it.
-- **The model's fuel term follows your input.** With LapBox's `fuel_load_est` (kg) the
-  coefficient is s/kg; from FastF1's laps the load is taken as the laps still to run, so it
-  is s per lap of fuel. The degradation rate is the same either way.
+  `TyreDegradationModel` pools every driver on a compound, and the slope is small next to
+  the noise: over 65 races of 2024–2026, 23 % of whole-race compound rates still come out
+  negative. The library reports the fit as it comes out, with `r2` and `laps` beside it;
+  clamp it before planning with it.
+- **The model's fuel effect is assumed, not fitted:** the same 0.048 s per lap of fuel as
+  everywhere else. Fitting it (up to `0.1.0.dev11`) could not tell fuel from tyre age,
+  which both move with the lap number. Fitting each race's first half and predicting the
+  second half's representative laps, the fixed effect with the 107 % filter cut the median
+  error by 19 % (0.79 → 0.64 s) on 65 races and was better in 71 % of them; how lap times
+  change *inside* a stint was predicted no better (−2 %, better in half the races).
+  `fuel_coef` reports the correction in your fuel's unit: s/kg with LapBox's
+  `fuel_load_est` (which needs a lap-number column to know how much a lap burns), s per
+  lap of fuel from FastF1's laps, 0 when the load never falls.
+- **Rain tyres are mostly left out in a mixed-weather race.** The 107 % filter keeps laps
+  against the driver's best of the race, usually on slicks: of eight rain-tyre fits in
+  those 65 races, five went and two kept under a third of their laps. Fit rain tyres
+  on their own laps.
 - **Stint degradation uses the same assumed 0.048 s/lap** fuel effect, and a stint needs
   three laps within 107 % of its best; a three-lap stint is a weak trend.
 
@@ -318,12 +330,14 @@ on all 7,226 values compared.
 
 | | |
 |---|---|
-| `TyreDegradationModel().fit(laps)` | One regression per compound: lap time on tyre age plus fuel load. `.compounds` (rate, intercept, fuel term, `r2`, laps), `.degradation_rate(c)`, `.predict_time_loss(c, age)`, `.summary()` |
+| `TyreDegradationModel().fit(laps)` | One line per compound: fuel-corrected lap time on tyre age, laps within 107 % of each driver's best. `.compounds` (rate, intercept, fuel correction, `r2`, laps), `.degradation_rate(c)`, `.predict_time_loss(c, age)`, `.summary()` |
 | `stint_degradation(laps)` | Every driver's every stint: laps counted, fuel-corrected median and slope (s/lap) |
 | `compound_summary(stints)` | Per compound: stints, laps, median / best / worst slope, kindest first |
 
-`TyreDegradationModel` is LapBox's model with scikit-learn replaced by a NumPy
-least-squares fit: on nine real compound fits it gives identical coefficients and R².
+`TyreDegradationModel` started as LapBox's model, with scikit-learn replaced by a NumPy
+least-squares fit (identical coefficients and R² on nine real compound fits). Since
+`0.1.0.dev12` it fixes the fuel effect and fits only representative laps (see the limits
+above).
 The stint functions are the LapBox tyre-life panel's TypeScript; on three races they agree
 on every count, compound and median, and on the slopes to within 6e-17 s/lap.
 
