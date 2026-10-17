@@ -206,7 +206,11 @@ the same piece of track and ends exactly at the official lap-time gap.
   (four qualifying sessions, 45 pairs each), each time where the official gap was 59 ms or
   less; the median gap at those lines was 181 ms. Without a clock the
   integral stands alone: it ended a median of 92–113 ms from the official gap and on the
-  wrong side in 2–9 of 45 pairs.
+  wrong side in 2–9 of 45 pairs. Over 19 qualifying sessions (2023–2026, 500-point grid) the
+  sessions' medians were 12–65 ms (2026 Suzuka, with 3 clean pairs, 40 / 75 ms), except 2026
+  China: 114 / 77 ms at the two lines on laps with no frozen data, 6–9 m of misplacement. One lap's speed reading stalled for under a second at a time
+  while RPM and gear moved on (stalls like it occur in every season without raising the error);
+  without it China is still 88 / 39 ms. The cause is not known.
 - **Where time changes hands is less certain than how much.** A few metres of misplacement
   between two laps cost the most where the car is slowest: the same lap compared with itself,
   with 5 m of distance error at its slowest corner, shows the gap curve gaining 0.10 s and
@@ -223,8 +227,15 @@ the same piece of track and ends exactly at the official lap-time gap.
   matched with another. `detect_frozen_stretches(tel)` finds these stretches. On 2026 China, Suzuka
   and Monza qualifying it was behind all 57 refused driver pairs (14, 16 and 5 of 22 fastest
   laps had one); on 183 laps from 2023, 2025 and three other 2026 sessions it flagged none.
-  Rebuilding the speed from the positions was tried and isn't reliable yet: about 50 ms off
-  at the sector lines at Suzuka, 160 ms at Monza.
+  Rebuilding the speed from the positions was tried twice and isn't reliable: with a smoothed
+  position speed the repaired pairs were a median 132 ms off at the sector lines at Monza
+  (clean pairs 19 ms), 69 ms at Suzuka and 172 ms at China.
+- **Don't read the peak lateral g.** `gforces` takes lateral g from the curvature of the
+  racing line, and the position feed bends it: on 1,008 clean qualifying laps (2023–2026) the
+  single highest lateral reading passed 6 g on 554 (up to 105 g), usually at the same place on
+  every lap of a session. The 95th percentile of `|a_lat|` stayed at 2.3–5.3 g and ranked
+  drivers consistently from lap to lap (median Spearman 0.66, against 0.24 for the peak).
+  Longitudinal g comes from the car's speed and is physical.
 - **Corners are found where the car slows down,** so the count won't match the
   circuit's official corner numbering: flat-out kinks produce no speed minimum. What
   you get is the same corners on every lap of a circuit, which is what comparisons need.

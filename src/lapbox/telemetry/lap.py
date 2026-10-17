@@ -289,6 +289,16 @@ def gforces(
     speed and heading are lightly smoothed (``smooth_window`` samples) before
     differentiating. Without it a handful of samples spike far beyond what a car
     can physically pull. Set ``smooth_window=0`` to disable.
+
+    Even smoothed, don't read the lateral *maximum*. On 1,008 clean qualifying laps
+    (2023, 2025, 2026; 600-point grid) the single highest lateral reading was above
+    6 g on 554, up to 105 g, and usually at the same place on every lap of a
+    session (2025 Albert Park about 8 g at 1.84 km; circles fitted through the raw
+    position samples give the same), so the position feed itself is the cause. The
+    95th percentile of ``|a_lat|`` stayed between 2.3 and 5.3 g on every lap and
+    ranked drivers the same way on their best and second-best laps far more often
+    (median Spearman 0.66 against 0.24 for the maximum). ``a_long`` comes from the
+    car's speed and was physical: its peak passed 6 g on 5 of the 1,008 laps.
     """
     dist = np.asarray(distance, dtype=float)
     v = np.asarray(speed_kmh, dtype=float) / 3.6  # km/h -> m/s
