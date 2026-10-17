@@ -49,3 +49,33 @@ jobs:
 
       - name: Build a wheel from the source tree
         run: pip wheel --no-deps -w dist .
+
+  core:
+    # The charts are an optional extra: a plain install must work without Plotly.
+    name: Core install (no extras)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install without extras
+        run: |
+          python -m pip install --upgrade pip
+          pip install .
+
+      - name: Every module imports, and Plotly is not installed
+        run: |
+          python -c "import lapbox.data, lapbox.pace, lapbox.practice, lapbox.telemetry, lapbox.tyres"
+          python -c "import importlib.util as u; assert u.find_spec('plotly') is None, 'plotly installed'"
+          python -c "
+          try:
+              import lapbox.plot
+          except ImportError as exc:
+              assert 'lapbox[plot]' in str(exc), exc
+          else:
+              raise SystemExit('lapbox.plot imported without Plotly')
+          "

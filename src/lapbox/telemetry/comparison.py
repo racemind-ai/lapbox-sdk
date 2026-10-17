@@ -470,6 +470,15 @@ class Comparison:
         """
         return self.residual <= MAX_ALIGNMENT_RESIDUAL
 
+    def plot(self, **kwargs):
+        """The time gap and both laps' channels as a Plotly figure.
+
+        :func:`lapbox.plot.comparison`; needs ``pip install "lapbox[plot]"``.
+        """
+        from lapbox.plot import comparison  # the optional extra, imported on use
+
+        return comparison(self, **kwargs)
+
 
 def compare(
     tel_a: pd.DataFrame,

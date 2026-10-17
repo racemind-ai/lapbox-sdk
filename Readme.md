@@ -8,11 +8,12 @@
 [FastF1](https://docs.fastf1.dev/). It is the analysis engine behind
 [LapBox](https://lapbox.in), extracted so anyone can use it on FastF1 data.
 
-> **Status: early development release (`0.1.0.dev12`).** In the library so far:
+> **Status: early development release (`0.1.0.dev13`).** In the library so far:
 > `lapbox.telemetry` (one lap, two laps matched by track position), `lapbox.data` (laps,
 > pit stops, stints, gaps), `lapbox.practice` (long runs), `lapbox.pace` (lap cleaning,
 > fuel-corrected race pace, clean air vs traffic, consistency, ideal lap) and `lapbox.tyres`
-> (degradation per compound and stint by stint). The strategy engine is moving over from
+> (degradation per compound and stint by stint), with charts as an optional extra
+> (`lapbox.plot`). The strategy engine is moving over from
 > LapBox next. Expect the API to change before `0.1.0`.
 
 ## Install
@@ -20,10 +21,15 @@
 Until the first PyPI release, install from the tagged source:
 
 ```bash
-pip install "lapbox @ https://github.com/racemind-ai/lapbox-sdk/archive/refs/tags/v0.1.0.dev12.tar.gz"
+pip install "lapbox @ https://github.com/racemind-ai/lapbox-sdk/archive/refs/tags/v0.1.0.dev13.tar.gz"
 ```
 
-Python 3.11+. Depends on FastF1, pandas, NumPy and SciPy.
+Python 3.11+. Depends on FastF1, pandas, NumPy and SciPy. For the charts, add the `plot`
+extra, which brings Plotly:
+
+```bash
+pip install "lapbox[plot] @ https://github.com/racemind-ai/lapbox-sdk/archive/refs/tags/v0.1.0.dev13.tar.gz"
+```
 
 ## Example
 
@@ -163,6 +169,22 @@ Monza barely wears tyres, and here both methods say the soft got *quicker* with 
 evolution, fuel assumptions and who ran which stint. The low `r2` is the honest part:
 tyre age explains little of how the lap times vary here. Read every rate with its laps
 (and, for the model, its `r2`).
+
+### Charts (optional)
+
+`lapbox.plot` draws the results with Plotly; nothing else in lapbox imports it. The charts
+keep the library's caveats: a pair that couldn't be matched is drawn without its time gap
+and says why, frozen car data is shaded, and minisectors decided by less than 20 ms are
+grey. Continuing the first example:
+
+```python
+from lapbox.plot import channel_traces, speed_delta, track_dominance
+
+result.plot().show()                 # the time gap, then both laps' channels
+speed_delta(result).show()
+track_dominance(result, ver).show()  # VER's racing line, coloured by who was quicker
+channel_traces(ver, driver="VER").show()
+```
 
 ## Why the laps are matched first
 
@@ -351,6 +373,18 @@ least-squares fit (identical coefficients and R² on nine real compound fits). S
 above).
 The stint functions are the LapBox tyre-life panel's TypeScript; on three races they agree
 on every count, compound and median, and on the slopes to within 6e-17 s/lap.
+
+## What's in `lapbox.plot` (the `plot` extra)
+
+| | |
+|---|---|
+| `channel_traces(tel)` | One lap's channels against distance, frozen car data shaded |
+| `comparison(result)`, `result.plot()` | The time gap from `compare`, then both laps' channels; an unmatched pair without the gap, and the reason in the title |
+| `speed_delta(result)` | Driver A's speed minus B's; for an unmatched pair, the reason instead |
+| `track_dominance(result, tel_a)` | A's racing line coloured by who took less time through each minisector; within `tie_margin` (20 ms) grey |
+
+Moved from LapBox's Plotly figures. Without Plotly, `import lapbox.plot` raises an
+`ImportError` that says what to install.
 
 ## Development
 
