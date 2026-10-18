@@ -31,7 +31,17 @@ extra, which brings Plotly:
 pip install "lapbox[plot] @ https://github.com/racemind-ai/lapbox-sdk/archive/refs/tags/v0.1.0.dev13.tar.gz"
 ```
 
+**Getting the data (October 2026).** lapbox reads what FastF1 downloads. Since mid-October
+F1's live-timing archive answers FastF1's downloads of past sessions with *401
+Unauthorized* (seen from one machine, whose last successful download was on 14 October), and
+FastF1 3.8.3, the latest release, sends no credentials for them. A FastF1 cache filled
+before then still works; every example here was run that way.
+
 ## Example
+
+For the whole library on real sessions, with every output saved, see the notebook
+[`examples/lapbox-tour.ipynb`](examples/lapbox-tour.ipynb): two laps compared, a pair the
+library refuses, race pace with the fuel taken out, and tyre wear. The short version:
 
 Every function takes FastF1 telemetry exactly as `lap.get_telemetry()` returns it.
 
