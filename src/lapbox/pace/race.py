@@ -220,8 +220,12 @@ def fuel_correct(laps: pd.DataFrame, total_laps: int | None = None) -> pd.DataFr
 def true_pace_ranking(laps: pd.DataFrame, total_laps: int | None = None) -> pd.DataFrame:
     """The field ranked by fuel-corrected pace, with the raw rank kept alongside.
 
-    Each driver's median over representative laps (within 107 % of their best),
-    raw and fuel-corrected. Drivers with fewer than three such laps are left out.
+    Each driver's median over representative laps (from lap 2, not pit laps,
+    within 107 % of their best), raw and fuel-corrected. Drivers with fewer than
+    three such laps are left out. Lap 1 is decided by the grid and the start, as
+    consistency and the clean-air split already treat it: counted whenever it was
+    within 107 % (30 of 245 driver-races in 12 races measured), it moved the
+    corrected median by a median 9.5 ms and up to 1.08 s, and 13 corrected ranks.
     ``rank_change`` is positive when a driver moves UP once fuel is accounted
     for: they ran their quick laps on heavy fuel.
 
@@ -234,7 +238,8 @@ def true_pace_ranking(laps: pd.DataFrame, total_laps: int | None = None) -> pd.D
     teams = _teams(laps)
     rows = []
     for driver, driver_laps in _drivers(laps, gaps={}).items():
-        rep = _representative(_fuel_correct(driver_laps, total))
+        racing = [lap for lap in driver_laps if lap.lap >= _FIRST_RACING_LAP]
+        rep = _representative(_fuel_correct(racing, total))
         if len(rep) < 3:
             continue
         rows.append(

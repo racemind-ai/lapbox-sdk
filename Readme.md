@@ -8,7 +8,7 @@
 [FastF1](https://docs.fastf1.dev/). It is the analysis engine behind
 [LapBox](https://lapbox.in), extracted so anyone can use it on FastF1 data.
 
-> **Status: early development release (`0.1.0.dev13`).** In the library so far:
+> **Status: early development release (`0.1.0.dev14`).** In the library so far:
 > `lapbox.telemetry` (one lap, two laps matched by track position), `lapbox.data` (laps,
 > pit stops, stints, gaps), `lapbox.practice` (long runs), `lapbox.pace` (lap cleaning,
 > fuel-corrected race pace, clean air vs traffic, consistency, ideal lap) and `lapbox.tyres`
@@ -21,20 +21,20 @@
 Until the first PyPI release, install from the tagged source:
 
 ```bash
-pip install "lapbox @ https://github.com/racemind-ai/lapbox-sdk/archive/refs/tags/v0.1.0.dev13.tar.gz"
+pip install "lapbox @ https://github.com/racemind-ai/lapbox-sdk/archive/refs/tags/v0.1.0.dev14.tar.gz"
 ```
 
 Python 3.11+. Depends on FastF1, pandas, NumPy and SciPy. For the charts, add the `plot`
 extra, which brings Plotly:
 
 ```bash
-pip install "lapbox[plot] @ https://github.com/racemind-ai/lapbox-sdk/archive/refs/tags/v0.1.0.dev13.tar.gz"
+pip install "lapbox[plot] @ https://github.com/racemind-ai/lapbox-sdk/archive/refs/tags/v0.1.0.dev14.tar.gz"
 ```
 
 **Getting the data (October 2026).** lapbox reads what FastF1 downloads. Since mid-October
 F1's live-timing archive answers FastF1's downloads of past sessions with *401
-Unauthorized* (seen from one machine, whose last successful download was on 14 October), and
-FastF1 3.8.3, the latest release, sends no credentials for them. A FastF1 cache filled
+Unauthorized* — for every user ([FastF1 issue #978](https://github.com/theOehrly/Fast-F1/issues/978)) —
+and FastF1 3.8.3, the latest release, sends no credentials for them. A FastF1 cache filled
 before then still works; every example here was run that way.
 
 ## Example
@@ -105,8 +105,8 @@ RUS HARD    9 laps  84.034 s  deg -0.154 s/lap
 
 A car gets roughly two seconds a lap quicker over a Grand Prix just by burning fuel, so
 raw lap times compare fuel loads as much as pace. `true_pace_ranking` normalises every lap
-to end-of-race fuel and ranks each driver's median over their representative laps (within
-107 % of their best, no pit laps). `clean_air_ranking` splits those laps by the gap to the
+to end-of-race fuel and ranks each driver's median over their representative laps (from lap
+2, no pit laps, within 107 % of their best). `clean_air_ranking` splits those laps by the gap to the
 car ahead at the line (2 s or less is traffic) and shows what traffic cost.
 
 ```python
@@ -360,7 +360,7 @@ the same piece of track and ends exactly at the official lap-time gap.
 | `LapCleaningPipeline(config).clean(laps)` → `CleaningResult` | Drops duplicate, untimed, pit, inaccurate, deleted, implausible (and optionally outlier) laps, **and reports how many each rule removed** |
 | `representative_base_time(lap_times)` | A circuit's normal pace: the median of laps within 107 % of the best, falling back to the plain median when fewer than 20 survive |
 | `fuel_correct(laps)` | Every timed, non-pit lap normalised to end-of-race fuel |
-| `true_pace_ranking(laps)` | Drivers ranked on fuel-corrected median pace, raw rank alongside |
+| `true_pace_ranking(laps)` | Drivers ranked on fuel-corrected median pace over representative laps (from lap 2, no pit laps, within 107 % of the best), raw rank alongside |
 | `clean_air_split(laps, driver)`, `clean_air_ranking(laps)` | Fuel-corrected pace in clean air vs within 2 s of the car ahead |
 | `driver_consistency(laps, driver)`, `consistency_ranking(laps)` | Spread (std, CV %) of representative laps (from lap 2, no pit laps, within 107 % of the best), lap by lap |
 | `ideal_lap(laps, driver)`, `biggest_loss(ideal)` | Sum of best sectors vs the fastest lap, and where that lap lost most |

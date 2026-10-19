@@ -145,19 +145,33 @@ class TestTruePaceRanking:
         assert top["rank_change"] == 1
 
     def test_reports_the_gap_to_the_quickest_corrected_pace(self) -> None:
-        rows = [lap(n, 95, driver="A") for n in (1, 2, 3)] + [
-            lap(n, 95.5, driver="B") for n in (1, 2, 3)
+        rows = [lap(n, 95, driver="A") for n in (2, 3, 4)] + [
+            lap(n, 95.5, driver="B") for n in (2, 3, 4)
         ]
         ranked = true_pace_ranking(laps_frame(rows), 10)
         assert ranked["gap"].iloc[0] == 0
         assert ranked["gap"].iloc[1] == pytest.approx(0.5)
 
     def test_excludes_compromised_laps_from_the_median(self) -> None:
-        rows = [lap(1, 95), lap(2, 95.1), lap(3, 95.2), lap(4, 140)]  # safety car
-        assert true_pace_ranking(laps_frame(rows), 4)["laps"].iloc[0] == 3
+        rows = [lap(2, 95), lap(3, 95.1), lap(4, 95.2), lap(5, 140)]  # safety car
+        assert true_pace_ranking(laps_frame(rows), 5)["laps"].iloc[0] == 3
 
     def test_ignores_drivers_with_too_few_laps_to_judge(self) -> None:
-        assert true_pace_ranking(laps_frame([lap(1, 95), lap(2, 95.1)]), 10).empty
+        assert true_pace_ranking(laps_frame([lap(2, 95), lap(3, 95.1)]), 10).empty
+
+    def test_leaves_lap_1_out_even_within_107_percent(self) -> None:
+        # Lap 1 is the grid and the start, as consistency and clean air treat it.
+        rows = [lap(1, 96.0), lap(2, 95.0), lap(3, 95.1), lap(4, 95.2)]
+        top = true_pace_ranking(laps_frame(rows), 4).iloc[0]
+        assert top["laps"] == 3
+        assert top["raw_median"] == pytest.approx(95.1)
+
+    def test_lap_1_does_not_set_the_107_percent_line(self) -> None:
+        # A lap 1 quicker than anything after it must not push every racing lap out.
+        rows = [lap(1, 80.0), lap(2, 90.0), lap(3, 90.1), lap(4, 90.2)]
+        ranked = true_pace_ranking(laps_frame(rows), 4)
+        assert len(ranked) == 1
+        assert ranked["laps"].iloc[0] == 3
 
 
 # --------------------------------------------------------------------------- #
