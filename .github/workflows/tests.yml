@@ -1,9 +1,9 @@
 name: tests
 
-# Lint and the offline unit suite on every supported Python, then a wheel build
-# from the source tree -- the same build the website's Docker image runs when it
-# installs lapbox from a release tarball, so packaging mistakes (a misnamed
-# readme, a missing package) fail here instead of in a deploy.
+# Lint and the offline unit suite on every supported Python, then the sdist and
+# wheel that go to PyPI, built from the source tree and checked with twine, so
+# packaging mistakes (a misnamed readme, a missing package, a description PyPI
+# can't render) fail here instead of in an upload or a deploy.
 #
 # Integration tests (live FastF1 downloads) are deliberately not run here.
 
@@ -47,8 +47,11 @@ jobs:
       - name: Unit tests (offline)
         run: pytest -m unit
 
-      - name: Build a wheel from the source tree
-        run: pip wheel --no-deps -w dist .
+      - name: Build the sdist and wheel PyPI gets, and check their metadata
+        run: |
+          pip install build twine
+          python -m build
+          twine check --strict dist/*
 
   core:
     # The charts are an optional extra: a plain install must work without Plotly.

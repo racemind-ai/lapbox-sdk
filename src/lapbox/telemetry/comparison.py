@@ -194,7 +194,10 @@ def align(
 # median residual of 7.6 km/h and 90 % below 12.2. Corrupted laps -- a dropout
 # leaves the distance axis locally stretched, which no global shift can undo --
 # sat at a median of 34.7. A 15 km/h cut caught 32 of 33 impossible pairs while
-# withholding only 8 of 217 sound ones.
+# withholding only 8 of 217 sound ones. (Measured in September 2026, before the
+# sub-sample shift of 0.1.0.dev6. Re-checked for 0.1.0 on the ten fastest laps of
+# 2023 Bahrain, 2025 Silverstone and 2026 China qualifying: pairs without frozen
+# car data sat at a median of 4.2-7.3 km/h, none above 12.8, none withheld.)
 MAX_ALIGNMENT_RESIDUAL = 15.0
 
 

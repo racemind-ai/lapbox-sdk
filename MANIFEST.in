@@ -1,0 +1,7 @@
+# The sdist carries the whole source, so its tests run: setuptools picks up only
+# tests/test*.py by default (not conftest.py, the fixtures), and test_examples.py
+# checks the saved notebook.
+include CHANGELOG.md
+graft tests
+graft examples
+global-exclude *.py[cod]

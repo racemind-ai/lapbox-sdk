@@ -22,9 +22,10 @@ from lapbox.practice import FUEL_EFFECT_S_PER_LAP
 # traffic, mistakes) and are not a measure of pace.
 REPRESENTATIVE = 1.07
 
-# Aerodynamic wake meaningfully hurts a following car within roughly this gap
-# in the current ground-effect era. Wider than DRS range (1s), because the
-# performance loss starts well before a driver is close enough to attack.
+# A following car loses time in the leader's wake within roughly this gap: a
+# rule of thumb, not measured by lapbox. It is wider than the 1 s at which the
+# follower may use the overtaking aid (DRS until 2025), because the loss starts
+# well before a driver is close enough to attack.
 DIRTY_AIR_S = 2.0
 
 # Lap 1 is decided by grid slot and the start, not by pace or traffic.

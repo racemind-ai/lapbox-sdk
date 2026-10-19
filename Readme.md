@@ -8,27 +8,26 @@
 [FastF1](https://docs.fastf1.dev/). It is the analysis engine behind
 [LapBox](https://lapbox.in), extracted so anyone can use it on FastF1 data.
 
-> **Status: early development release (`0.1.0.dev14`).** In the library so far:
-> `lapbox.telemetry` (one lap, two laps matched by track position), `lapbox.data` (laps,
-> pit stops, stints, gaps), `lapbox.practice` (long runs), `lapbox.pace` (lap cleaning,
-> fuel-corrected race pace, clean air vs traffic, consistency, ideal lap) and `lapbox.tyres`
-> (degradation per compound and stint by stint), with charts as an optional extra
-> (`lapbox.plot`). The strategy engine is moving over from
-> LapBox next. Expect the API to change before `0.1.0`.
+> **Status: `0.1.0`, the first release.** In the library: `lapbox.telemetry` (one lap, two
+> laps matched by track position), `lapbox.data` (laps, pit stops, stints, gaps),
+> `lapbox.practice` (long runs), `lapbox.pace` (lap cleaning, fuel-corrected race pace, clean
+> air vs traffic, consistency, ideal lap) and `lapbox.tyres` (degradation per compound and
+> stint by stint), with charts as an optional extra (`lapbox.plot`). The strategy engine
+> moves over from LapBox in 0.2. Until 1.0 the API may still change between minor
+> releases; every change is listed in the
+> [changelog](https://github.com/racemind-ai/lapbox-sdk/blob/main/CHANGELOG.md).
 
 ## Install
-  
-Until the first PyPI release, install from the tagged source:
 
 ```bash
-pip install "lapbox @ https://github.com/racemind-ai/lapbox-sdk/archive/refs/tags/v0.1.0.dev14.tar.gz"
+pip install lapbox
 ```
 
 Python 3.11+. Depends on FastF1, pandas, NumPy and SciPy. For the charts, add the `plot`
 extra, which brings Plotly:
 
 ```bash
-pip install "lapbox[plot] @ https://github.com/racemind-ai/lapbox-sdk/archive/refs/tags/v0.1.0.dev14.tar.gz"
+pip install "lapbox[plot]"
 ```
 
 **Getting the data (October 2026).** lapbox reads what FastF1 downloads. Since mid-October
@@ -40,7 +39,7 @@ before then still works; every example here was run that way.
 ## Example
 
 For the whole library on real sessions, with every output saved, see the notebook
-[`examples/lapbox-tour.ipynb`](examples/lapbox-tour.ipynb): two laps compared, a pair the
+[`examples/lapbox-tour.ipynb`](https://github.com/racemind-ai/lapbox-sdk/blob/main/examples/lapbox-tour.ipynb): two laps compared, a pair the
 library refuses, race pace with the fuel taken out, and tyre wear. The short version:
 
 Every function takes FastF1 telemetry exactly as `lap.get_telemetry()` returns it.
