@@ -8,12 +8,18 @@
 [FastF1](https://docs.fastf1.dev/). It is the analysis engine behind
 [LapBox](https://lapbox.in), extracted so anyone can use it on FastF1 data.
 
+**Documentation: [lapbox.in/docs](https://lapbox.in/docs/)** — a quickstart, a guide per
+module, the full API reference and the measured limits, with every example run on real
+sessions.
+
 > **Status: `0.1.0`, the first release.** In the library: `lapbox.telemetry` (one lap, two
 > laps matched by track position), `lapbox.data` (laps, pit stops, stints, gaps),
 > `lapbox.practice` (long runs), `lapbox.pace` (lap cleaning, fuel-corrected race pace, clean
 > air vs traffic, consistency, ideal lap) and `lapbox.tyres` (degradation per compound and
 > stint by stint), with charts as an optional extra (`lapbox.plot`). The strategy engine
-> moves over from LapBox in 0.2. Until 1.0 the API may still change between minor
+> is moving over from LapBox for 0.2: `lapbox.strategy` (the engine itself) is on `main`
+> and in the `0.2.0.dev0` pre-release; fitting it to a session, planning, regret and the
+> duel follow. Until 1.0 the API may still change between minor
 > releases; every change is listed in the
 > [changelog](https://github.com/racemind-ai/lapbox-sdk/blob/main/CHANGELOG.md).
 
@@ -31,10 +37,13 @@ pip install "lapbox[plot]"
 ```
 
 **Getting the data (October 2026).** lapbox reads what FastF1 downloads. Since mid-October
-F1's live-timing archive answers FastF1's downloads of past sessions with *401
-Unauthorized* — for every user ([FastF1 issue #978](https://github.com/theOehrly/Fast-F1/issues/978)) —
-and FastF1 3.8.3, the latest release, sends no credentials for them. A FastF1 cache filled
-before then still works; every example here was run that way.
+F1's live-timing archive answers downloads of past sessions with *401 Unauthorized* unless
+you sign in with an F1 TV Access subscription
+([FastF1 issue #978](https://github.com/theOehrly/Fast-F1/issues/978)). FastF1 3.8.3, the
+latest stable release, can't sign in; the pre-release `fastf1==3.9.0a0` can (see its
+[authentication docs](https://docs.fastf1.dev/versions/dev/api_reference/accounts_auth.html)).
+lapbox's tests pass with it; downloading through an account has not been tested here. A
+FastF1 cache filled before mid-October still works; every example here was run that way.
 
 ## Example
 
@@ -179,6 +188,48 @@ evolution, fuel assumptions and who ran which stint. The low `r2` is the honest 
 tyre age explains little of how the lap times vary here. Read every rate with its laps
 (and, for the model, its `r2`).
 
+### Race strategy (pre-release)
+
+`lapbox.strategy` prices a tyre plan lap by lap: pace, compound offset, wear, fuel still on
+board, a cliff past a compound's cliff lap, the track condition, and cautions (behind a safety
+car every car laps at a fixed multiple of base pace, and a stop costs half). In `0.2.0.dev0`
+you give it the race yourself; fitting a `RaceModel` to a real session comes in a later
+pre-release. The numbers below come from a made-up race.
+
+```python
+from lapbox.strategy import RaceModel, Strategy, StrategyEngine
+
+model = RaceModel(
+    total_laps=53,
+    base_lap_time=82.0,
+    compound_offsets={"SOFT": 0.0, "MEDIUM": 0.3, "HARD": 0.7},
+    degradation={"SOFT": 0.10, "MEDIUM": 0.06, "HARD": 0.04},
+    pit_loss=22.0,
+    sc_windows=((30, 33, "SC"),),  # a safety car on laps 30-33
+)
+engine = StrategyEngine(model)
+
+for plan in (
+    Strategy.from_pairs([("MEDIUM", 25), ("HARD", 28)]),
+    Strategy.from_pairs([("MEDIUM", 31), ("HARD", 22)]),  # stops under the safety car
+    Strategy.from_pairs([("SOFT", 18), ("MEDIUM", 17), ("HARD", 18)]),
+):
+    race = engine.simulate(plan)
+    stops = ", ".join(map(str, plan.pit_laps))
+    print(f"{'-'.join(plan.compounds):<17} stop lap {stops:<7} {race.total_time:7.1f} s "
+          f"(pit loss {race.pit_loss_total:4.1f} s)")
+```
+
+```text
+MEDIUM-HARD       stop lap 25       4701.3 s (pit loss 22.0 s)
+MEDIUM-HARD       stop lap 31       4690.1 s (pit loss 11.0 s)
+SOFT-MEDIUM-HARD  stop lap 18, 35   4710.7 s (pit loss 44.0 s)
+```
+
+Stopping on lap 31, under the safety car, saves half the pit loss and wins this race by 11 s
+over stopping on lap 25. That is the model's arithmetic, not a forecast: the engine has not
+been backtested against real races (see the limits).
+
 ### Charts (optional)
 
 `lapbox.plot` draws the results with Plotly; nothing else in lapbox imports it. The charts
@@ -306,6 +357,15 @@ the same piece of track and ends exactly at the official lap-time gap.
   on their own laps.
 - **Stint degradation uses the same assumed 0.048 s/lap** fuel effect, and a stint needs
   three laps within 107 % of its best; a three-lap stint is a weak trend.
+- **The strategy engine is not a forecast.** It prices the model you give it. In LapBox it
+  was checked once against real races: for 145 pairs of teammates who finished on the lead
+  lap with different strategies (57 races), the gap it predicted between their two
+  strategies was a median 18–19 s off the real one, against 13.5 s for predicting no gap,
+  with a correlation of about 0.1. A proper backtest comes before anything here is called
+  a prediction.
+- **`RaceModel`'s fuel effect defaults to 0.06 s/lap**, while `lapbox.pace` and
+  `lapbox.tyres` assume 0.048 (`FUEL_EFFECT_S_PER_LAP`). The two are not reconciled yet; pass
+  `fuel_effect_per_lap` if they should agree.
 
 ## What's in `lapbox.telemetry`
 
@@ -382,6 +442,20 @@ least-squares fit (identical coefficients and R² on nine real compound fits). S
 above).
 The stint functions are the LapBox tyre-life panel's TypeScript; on three races they agree
 on every count, compound and median, and on the slopes to within 6e-17 s/lap.
+
+## What's in `lapbox.strategy` (pre-release)
+
+| | |
+|---|---|
+| `Stint(compound, laps)`, `Strategy(stints)`, `Strategy.from_pairs([(c, n), …])` | A plan: `total_laps`, `n_stops`, `pit_laps`, `compounds` |
+| `RaceModel(total_laps, base_lap_time, …)` | The race: compound offsets, degradation, pit loss, fuel effect, cliff laps, track condition (or one per lap), track temperature, safety-car / VSC windows |
+| `StrategyEngine(model).simulate(plan)` → `StrategyResult` | Total time, green-flag time, pit losses, stops, per-lap times; `.race_time(plan)` for the total alone |
+| `.lap_trace(plan)` | Per lap: time, cumulative time, compound, tyre age, fuel laps left, safety-car state, past the cliff |
+| `.per_lap_times(plan, start_lap=, start_tyre_age=)`, `.remaining_time(…)`, `.lap_cost(c, lap, age)` | A plan from mid-race on part-worn tyres; one lap priced on its own |
+| `condition_pace_multiplier`, `wrong_compound_penalty`, `temp_degradation_factor` | Damp and wet pace (1.12 / 1.18 × dry), the wrong tyre for the conditions, wear with track temperature (+3 % per °C over 30) |
+
+Moved from LapBox's strategy engine with its names and behaviour unchanged; the website now
+imports it from here.
 
 ## What's in `lapbox.plot` (the `plot` extra)
 

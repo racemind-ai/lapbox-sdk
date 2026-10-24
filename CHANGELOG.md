@@ -4,6 +4,19 @@ All notable changes to `lapbox`. Until 1.0 a minor release (0.2, 0.3, …) may c
 each change is listed here. The `0.1.0.devN` versions were development tags on GitHub, installed
 from their source tarballs (the LapBox website ran on them); `0.1.0` is the first release on PyPI.
 
+## 0.2.0.dev0 (pre-release) — 2026-10-24
+
+- `lapbox.strategy`: the race-strategy engine, moved from LapBox with its names and behaviour
+  unchanged — `Stint`, `Strategy`, `RaceModel` (compound offsets, wear, fuel, cliff laps, track
+  condition lap by lap, safety-car and VSC windows), `StrategyEngine` (`simulate`, `lap_trace`,
+  `race_time`, `per_lap_times`, `remaining_time`, `lap_cost`), `StrategyResult`, and the wet and
+  temperature helpers; 14 tests moved with it. You build the `RaceModel` yourself for now, and
+  the engine has not been backtested against real races (see the Readme's limits).
+- Documentation at https://lapbox.in/docs/ (a quickstart, a guide per module, the full API
+  reference, the limits), linked from the Readme and as the package's `Documentation` URL.
+- Readme: F1's live-timing archive now needs an F1 TV Access sign-in; FastF1's pre-release
+  `3.9.0a0` supports it, and lapbox's 236 tests pass with it.
+
 ## 0.1.0 — 2026-10-19
 
 The first release on PyPI. The code is `0.1.0.dev14`'s; what changed is the packaging and two
