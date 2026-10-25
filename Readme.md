@@ -17,9 +17,9 @@ sessions.
 > `lapbox.practice` (long runs), `lapbox.pace` (lap cleaning, fuel-corrected race pace, clean
 > air vs traffic, consistency, ideal lap) and `lapbox.tyres` (degradation per compound and
 > stint by stint), with charts as an optional extra (`lapbox.plot`). The strategy engine
-> is moving over from LapBox for 0.2: `lapbox.strategy`'s engine is in the `0.2.0.dev0`
-> pre-release, and Monte Carlo, pit-stop planning, the pit window and the undercut are on
-> `main` for the next one; fitting a race model to a session, regret and the duel follow.
+> is moving over from LapBox for 0.2: `lapbox.strategy` (the engine, Monte Carlo, pit-stop
+> planning, the pit window and the undercut) and `lapbox.errors` are in the `0.2.0.dev1`
+> pre-release; fitting a race model to a session, regret and the duel follow.
 > Until 1.0 the API may still change between minor
 > releases; every change is listed in the
 > [changelog](https://github.com/racemind-ai/lapbox-sdk/blob/main/CHANGELOG.md).
@@ -193,7 +193,7 @@ tyre age explains little of how the lap times vary here. Read every rate with it
 
 `lapbox.strategy` prices a tyre plan lap by lap: pace, compound offset, wear, fuel still on
 board, a cliff past a compound's cliff lap, the track condition, and cautions (behind a safety
-car every car laps at a fixed multiple of base pace, and a stop costs half). In `0.2.0.dev0`
+car every car laps at a fixed multiple of base pace, and a stop costs half). In `0.2.0.dev1`
 you give it the race yourself; fitting a `RaceModel` to a real session comes in a later
 pre-release. The numbers below come from a made-up race.
 
@@ -233,7 +233,7 @@ been backtested against real races (see the limits).
 
 ### Planning a race (pre-release)
 
-On `main`, for the next pre-release: every legal plan ranked under the model, a Monte Carlo
+In the `0.2.0.dev1` pre-release: every legal plan ranked under the model, a Monte Carlo
 comparison, and the window for a stop. This continues the example above.
 
 ```python
@@ -506,9 +506,9 @@ on every count, compound and median, and on the slopes to within 6e-17 s/lap.
 | `.lap_trace(plan)` | Per lap: time, cumulative time, compound, tyre age, fuel laps left, safety-car state, past the cliff |
 | `.per_lap_times(plan, start_lap=, start_tyre_age=)`, `.remaining_time(…)`, `.lap_cost(c, lap, age)` | A plan from mid-race on part-worn tyres; one lap priced on its own |
 | `condition_pace_multiplier`, `wrong_compound_penalty`, `temp_degradation_factor` | Damp and wet pace (1.12 / 1.18 × dry), the wrong tyre for the conditions, wear with track temperature (+3 % per °C over 30) |
-| `MonteCarloSimulator(engine, MonteCarloConfig(…), seed=)` → `.simulate(plan)`, `.compare(plans)` | A distribution of finishing times (mean, spread, 5th / 50th / 95th percentiles) with lap noise, random safety cars and rain; plans compared on the same random draws, with each one's win probability *(on `main`)* |
-| `generate_candidate_strategies(total_laps, compounds, …)`, `recommend_strategy(engine, compounds, …)` → `PitStopRecommendation` | Every legal one- or two-stop plan (minimum stint, two dry compounds; rain plans in the wet), and the best of them, with its gain over the median plan and, given a simulator, its win probability *(on `main`)* |
-| `pit_window_sweep(engine, plan)` → `PitWindow`, `undercut_report(engine, plan, rival)`, `shift_pit_lap` | Each stop moved ±8 laps: the cost curve and the laps within 1 s of the best; the seconds an undercut gains before the rival covers *(on `main`)* |
+| `MonteCarloSimulator(engine, MonteCarloConfig(…), seed=)` → `.simulate(plan)`, `.compare(plans)` | A distribution of finishing times (mean, spread, 5th / 50th / 95th percentiles) with lap noise, random safety cars and rain; plans compared on the same random draws, with each one's win probability |
+| `generate_candidate_strategies(total_laps, compounds, …)`, `recommend_strategy(engine, compounds, …)` → `PitStopRecommendation` | Every legal one- or two-stop plan (minimum stint, two dry compounds; rain plans in the wet), and the best of them, with its gain over the median plan and, given a simulator, its win probability |
+| `pit_window_sweep(engine, plan)` → `PitWindow`, `undercut_report(engine, plan, rival)`, `shift_pit_lap` | Each stop moved ±8 laps: the cost curve and the laps within 1 s of the best; the seconds an undercut gains before the rival covers |
 
 Moved from LapBox's strategy code with its names and behaviour unchanged; the website now
 imports it from here.
@@ -521,7 +521,7 @@ imports it from here.
 | `NotEnoughDataError` | The data can't support an answer (a web service would answer 404) |
 | `InvalidPlanError` | The request can't be met as asked: constraints no plan meets, no plans to compare (422) |
 
-Both are also `ValueError`, so code that caught `ValueError` keeps working. *(On `main`.)*
+Both are also `ValueError`, so code that caught `ValueError` keeps working.
 
 ## What's in `lapbox.plot` (the `plot` extra)
 
