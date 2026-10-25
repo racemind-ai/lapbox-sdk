@@ -1,7 +1,8 @@
 """Unit tests for the strategy engine: plans, race time lap by lap, track condition, cautions.
 
 Moved with the engine from LapBox (``tests/unit/test_strategy_engine.py`` and the engine-physics
-cases of ``tests/unit/test_strategy_room.py``), unchanged but for the imports.
+cases of ``tests/unit/test_strategy_room.py``; its two engine review fixes followed in P12),
+unchanged but for the imports.
 """
 
 from __future__ import annotations
@@ -171,3 +172,36 @@ class TestEnginePhysics:
         # Cumulative time includes the (discounted) pit loss at the in-lap.
         jump = trace["cum_time"][21] - trace["cum_time"][20]
         assert jump == pytest.approx(trace["lap_time"][21] + 11.0)
+
+
+class TestReviewFixes:
+    """Regression tests for the adversarial-review findings (the engine ones)."""
+
+    def test_wet_physics_not_inverted(self) -> None:
+        # THE big one: rain tyres must beat slicks in the rain.
+        offsets = {"SOFT": 0.0, "MEDIUM": 0.3, "INTERMEDIATE": 8.0, "WET": 14.0}
+        deg = {"SOFT": 0.10, "MEDIUM": 0.06, "INTERMEDIATE": 0.05, "WET": 0.03}
+
+        def fresh_lap(condition: str, compound: str) -> float:
+            model = _model(
+                total_laps=10, compound_offsets=offsets, degradation=deg, condition=condition
+            )
+            engine = StrategyEngine(model)
+            return float(engine.per_lap_times(Strategy.from_pairs([(compound, 10)]))[0])
+
+        # Wet: full wets fastest, inters second, slicks nowhere.
+        assert fresh_lap("wet", "WET") < fresh_lap("wet", "INTERMEDIATE") < fresh_lap("wet", "SOFT")
+        # Damp: inters fastest.
+        assert fresh_lap("damp", "INTERMEDIATE") < fresh_lap("damp", "WET")
+        assert fresh_lap("damp", "INTERMEDIATE") < fresh_lap("damp", "SOFT")
+        # Dry unchanged: slicks fastest, rain tyres penalised.
+        assert fresh_lap("dry", "SOFT") < fresh_lap("dry", "INTERMEDIATE")
+
+    def test_sc_lap_time_is_pace_limited_not_tyre_dependent(self) -> None:
+        # Under SC, an old-tyre car and a fresh-tyre car lap at the same speed.
+        model = _model(sc_windows=((30, 33, "SC"),))
+        engine = StrategyEngine(model)
+        old_tyres = engine.per_lap_times(Strategy.from_pairs([("SOFT", 40), ("MEDIUM", 10)]))
+        fresh_tyres = engine.per_lap_times(Strategy.from_pairs([("SOFT", 29), ("MEDIUM", 21)]))
+        assert old_tyres[30] == pytest.approx(fresh_tyres[30])  # both SC laps
+        assert old_tyres[30] == pytest.approx(90.0 * 1.6)

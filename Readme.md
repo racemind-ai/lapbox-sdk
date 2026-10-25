@@ -17,9 +17,10 @@ sessions.
 > `lapbox.practice` (long runs), `lapbox.pace` (lap cleaning, fuel-corrected race pace, clean
 > air vs traffic, consistency, ideal lap) and `lapbox.tyres` (degradation per compound and
 > stint by stint), with charts as an optional extra (`lapbox.plot`). The strategy engine
-> is moving over from LapBox for 0.2: `lapbox.strategy` (the engine itself) is on `main`
-> and in the `0.2.0.dev0` pre-release; fitting it to a session, planning, regret and the
-> duel follow. Until 1.0 the API may still change between minor
+> is moving over from LapBox for 0.2: `lapbox.strategy`'s engine is in the `0.2.0.dev0`
+> pre-release, and Monte Carlo, pit-stop planning, the pit window and the undercut are on
+> `main` for the next one; fitting a race model to a session, regret and the duel follow.
+> Until 1.0 the API may still change between minor
 > releases; every change is listed in the
 > [changelog](https://github.com/racemind-ai/lapbox-sdk/blob/main/CHANGELOG.md).
 
@@ -230,6 +231,54 @@ Stopping on lap 31, under the safety car, saves half the pit loss and wins this 
 over stopping on lap 25. That is the model's arithmetic, not a forecast: the engine has not
 been backtested against real races (see the limits).
 
+### Planning a race (pre-release)
+
+On `main`, for the next pre-release: every legal plan ranked under the model, a Monte Carlo
+comparison, and the window for a stop. This continues the example above.
+
+```python
+from dataclasses import replace
+
+from lapbox.strategy import (
+    MonteCarloConfig,
+    MonteCarloSimulator,
+    pit_window_sweep,
+    recommend_strategy,
+)
+
+# Every legal one- and two-stop plan, ranked by race time under the model above.
+rec = recommend_strategy(engine, ["SOFT", "MEDIUM", "HARD"], max_stops=2, pit_lap_step=2)
+print(f"best: {'-'.join(rec.compounds)}, stop lap {rec.pit_laps}, "
+      f"{rec.expected_gain_s:.1f} s ahead of the median of {rec.candidates_evaluated} plans")
+
+# Monte Carlo draws its own safety cars: give it the race without the fixed one.
+green = StrategyEngine(replace(model, sc_windows=()))
+sim = MonteCarloSimulator(green, MonteCarloConfig(rain_probability=0.0), seed=1)
+plans = [
+    Strategy.from_pairs([("MEDIUM", 25), ("HARD", 28)]),
+    Strategy.from_pairs([("SOFT", 18), ("MEDIUM", 17), ("HARD", 18)]),
+]
+for row in sim.compare(plans).rows:
+    print(f"{'-'.join(row['strategy'].compounds):<17} wins {row['win_probability']:.0%} "
+          f"of 2000 races, mean {row['mean_time']:.1f} s")
+
+window = pit_window_sweep(engine, plans[0])[0]
+print(f"stop planned on lap {window.planned_lap}: best on lap {window.best_lap} "
+      f"(saves {window.best_saving_s:.1f} s), within 1 s on laps "
+      f"{window.window_start}-{window.window_end}")
+```
+
+```text
+best: MEDIUM-SOFT, stop lap [33], 26.4 s ahead of the median of 3108 plans
+MEDIUM-HARD       wins 95% of 2000 races, mean 4546.8 s
+SOFT-MEDIUM-HARD  wins 5% of 2000 races, mean 4556.6 s
+stop planned on lap 25: best on lap 33 (saves 12.8 s), within 1 s on laps 32-33
+```
+
+With a safety car on laps 30–33 the best plan stops on its last lap, where a stop costs half;
+the Monte Carlo races use its own random safety cars instead, with hand-set defaults. All of it
+is the model's arithmetic, not a forecast.
+
 ### Charts (optional)
 
 `lapbox.plot` draws the results with Plotly; nothing else in lapbox imports it. The charts
@@ -363,6 +412,10 @@ the same piece of track and ends exactly at the official lap-time gap.
   strategies was a median 18–19 s off the real one, against 13.5 s for predicting no gap,
   with a correlation of about 0.1. A proper backtest comes before anything here is called
   a prediction.
+- **Monte Carlo's defaults are set by hand**: 0.15 s of lap noise, a 35 % safety-car chance,
+  4 safety-car laps, a 15 % chance of rain. Pass your circuit's own (LapBox passes each
+  circuit's measured safety-car chance and the laps safety cars start on), and give it a
+  model without `sc_windows`: it draws its own safety cars, so a fixed one counts twice.
 - **`RaceModel`'s fuel effect defaults to 0.06 s/lap**, while `lapbox.pace` and
   `lapbox.tyres` assume 0.048 (`FUEL_EFFECT_S_PER_LAP`). The two are not reconciled yet; pass
   `fuel_effect_per_lap` if they should agree.
@@ -453,9 +506,22 @@ on every count, compound and median, and on the slopes to within 6e-17 s/lap.
 | `.lap_trace(plan)` | Per lap: time, cumulative time, compound, tyre age, fuel laps left, safety-car state, past the cliff |
 | `.per_lap_times(plan, start_lap=, start_tyre_age=)`, `.remaining_time(…)`, `.lap_cost(c, lap, age)` | A plan from mid-race on part-worn tyres; one lap priced on its own |
 | `condition_pace_multiplier`, `wrong_compound_penalty`, `temp_degradation_factor` | Damp and wet pace (1.12 / 1.18 × dry), the wrong tyre for the conditions, wear with track temperature (+3 % per °C over 30) |
+| `MonteCarloSimulator(engine, MonteCarloConfig(…), seed=)` → `.simulate(plan)`, `.compare(plans)` | A distribution of finishing times (mean, spread, 5th / 50th / 95th percentiles) with lap noise, random safety cars and rain; plans compared on the same random draws, with each one's win probability *(on `main`)* |
+| `generate_candidate_strategies(total_laps, compounds, …)`, `recommend_strategy(engine, compounds, …)` → `PitStopRecommendation` | Every legal one- or two-stop plan (minimum stint, two dry compounds; rain plans in the wet), and the best of them, with its gain over the median plan and, given a simulator, its win probability *(on `main`)* |
+| `pit_window_sweep(engine, plan)` → `PitWindow`, `undercut_report(engine, plan, rival)`, `shift_pit_lap` | Each stop moved ±8 laps: the cost curve and the laps within 1 s of the best; the seconds an undercut gains before the rival covers *(on `main`)* |
 
-Moved from LapBox's strategy engine with its names and behaviour unchanged; the website now
+Moved from LapBox's strategy code with its names and behaviour unchanged; the website now
 imports it from here.
+
+## When lapbox refuses (`lapbox.errors`)
+
+| | |
+|---|---|
+| `LapboxError` | The base of every refusal lapbox raises on purpose |
+| `NotEnoughDataError` | The data can't support an answer (a web service would answer 404) |
+| `InvalidPlanError` | The request can't be met as asked: constraints no plan meets, no plans to compare (422) |
+
+Both are also `ValueError`, so code that caught `ValueError` keeps working. *(On `main`.)*
 
 ## What's in `lapbox.plot` (the `plot` extra)
 

@@ -4,6 +4,18 @@ All notable changes to `lapbox`. Until 1.0 a minor release (0.2, 0.3, …) may c
 each change is listed here. The `0.1.0.devN` versions were development tags on GitHub, installed
 from their source tarballs (the LapBox website ran on them); `0.1.0` is the first release on PyPI.
 
+## 0.2.0.dev1 (pre-release) — not released yet
+
+- `lapbox.strategy` planning, moved from LapBox with its names and behaviour unchanged:
+  `MonteCarloSimulator` / `MonteCarloConfig` (lap noise, random safety cars and rain; plans
+  compared on the same random draws), `generate_candidate_strategies` / `recommend_strategy`
+  (every legal plan, best first), `pit_window_sweep`, `shift_pit_lap` and `undercut_report`;
+  22 tests moved with them, and the engine's two remaining review-fix tests.
+- `lapbox.errors`: `LapboxError`, `NotEnoughDataError`, `InvalidPlanError`, both also
+  `ValueError`. `recommend_strategy` (no plan meets the constraints) and
+  `MonteCarloSimulator.compare` (no plans) raise `InvalidPlanError` where they raised a plain
+  `ValueError`; code that catches `ValueError` is unaffected.
+
 ## 0.2.0.dev0 (pre-release) — 2026-10-24
 
 - `lapbox.strategy`: the race-strategy engine, moved from LapBox with its names and behaviour

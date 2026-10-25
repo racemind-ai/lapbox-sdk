@@ -72,7 +72,7 @@ jobs:
 
       - name: Every module imports, and Plotly is not installed
         run: |
-          python -c "import lapbox.data, lapbox.pace, lapbox.practice, lapbox.strategy, lapbox.telemetry, lapbox.tyres"
+          python -c "import lapbox.data, lapbox.errors, lapbox.pace, lapbox.practice, lapbox.strategy, lapbox.telemetry, lapbox.tyres"
           python -c "import importlib.util as u; assert u.find_spec('plotly') is None, 'plotly installed'"
           python -c "
           try:
